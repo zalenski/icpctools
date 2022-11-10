@@ -26,7 +26,7 @@ import org.icpc.tools.presentation.contest.internal.TextHelper;
 
 public class TeamIntroPresentation extends AbstractICPCPresentation {
 	private static final long GROUP_INTRO_TIME = 4000;
-	private static final long GROUP_SUMMARY_TIME = 7000;
+	private static final long GROUP_SUMMARY_TIME = 7000 * 3;
 	private static final long TIME_PER_GROUP = GROUP_INTRO_TIME + GROUP_SUMMARY_TIME;
 	private static final long FADE = 500;
 
@@ -35,7 +35,7 @@ public class TeamIntroPresentation extends AbstractICPCPresentation {
 	private static final long FADE_OUT_TIME = 1000;
 	private static final long TIME_PER_TEAM = FADE_IN_TIME + TEAM_TIME + FADE_OUT_TIME;
 
-	private double timeFactor = 1;
+	private double timeFactor = 3;
 	private boolean showOrganizations = false;
 
 	static class Position {
