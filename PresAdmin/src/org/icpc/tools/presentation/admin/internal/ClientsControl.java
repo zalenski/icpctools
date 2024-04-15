@@ -680,6 +680,7 @@ public class ClientsControl extends Canvas {
 	 * Process the paint event
 	 */
 	protected void paint(PaintEvent event) {
+		System.err.println("DARK + " + Display.isSystemDarkTheme());
 		Rectangle rect = getClientArea();
 		if (rect.width == 0 || rect.height == 0)
 			return;
