@@ -35,7 +35,7 @@ public class TeamIntroPresentation extends AbstractICPCPresentation {
 	private static final long FADE_OUT_TIME = 1000;
 	private static final long TIME_PER_TEAM = FADE_IN_TIME + TEAM_TIME + FADE_OUT_TIME;
 
-	private double timeFactor = 1;
+	private double timeFactor = 3; // 3;
 	private boolean showOrganizations = false;
 
 	static class Position {
