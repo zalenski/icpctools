@@ -272,6 +272,7 @@ public class Trace {
 			sb.append("E ");
 		sb.append(s);
 
+		System.err.println(sb.toString());
 		if (writer != null) {
 			try {
 				Iterator<String> iterator = iterate(sb.toString());
