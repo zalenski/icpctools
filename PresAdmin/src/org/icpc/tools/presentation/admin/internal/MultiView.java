@@ -47,10 +47,13 @@ public class MultiView {
         // Logos
         CCS("CCS", "org.icpc.tools.presentation.contest.internal.presentations.CCSPresentation"),
         TOOLS("ICPC Tools", "org.icpc.tools.presentation.core.internal.ICPCToolsPresentation"),
+        // LogoA: ICPC logo with fade-ins + "world finals" + city
         LOGO_A("LogoA", "org.icpc.tools.presentation.contest.internal.presentations.LogoAPresentation"),
+        // LogoB: styled logo with fade-ins + "world finals" + city + hosted by
+        LOGO_B("LogoB", "org.icpc.tools.presentation.contest.internal.presentations.LogoBPresentation"),
         INTRO("Team Intro", "org.icpc.tools.presentation.contest.internal.presentations.map.TeamIntroPresentation"),
         // Count-down & start
-        COUNTDOWN("Countdown", "org.icpc.tools.presentation.contest.internal.presentations.clock.CountdownPresentation"),
+        //COUNTDOWN("Countdown", "org.icpc.tools.presentation.contest.internal.presentations.clock.CountdownPresentation"),
         STATUS_COUNTDOWN("StatusCountdown", "org.icpc.tools.presentation.contest.internal.presentations.clock.StatusCountdownPresentation"),
         POLAR("Polar", "org.icpc.tools.presentation.contest.internal.presentations.clock.PolarCountdownPresentation"),
         FIRST_SOLUTION("First Solution", "org.icpc.tools.presentation.contest.internal.scoreboard.FirstSolutionPresentation"),
@@ -71,8 +74,13 @@ public class MultiView {
         PROBLEM_BARS("Problem Bars", "org.icpc.tools.presentation.contest.internal.chart.ProblemSummaryChart"),
         // Test
         SYNC("Synchronization", "org.icpc.tools.presentation.contest.internal.presentations.test.TestSyncPresentation"),
+        ALIGNMENT("Alignment", "org.icpc.tools.presentation.contest.internal.presentations.test.TestAlignmentPresentation"),
         MESSAGE("Message", "org.icpc.tools.presentation.contest.internal.presentations.MessagePresentation"),
-        LONG("-                                                              -", "");
+        // Missing:
+        PHOTOS("Photos", "org.icpc.tools.presentation.contest.internal.presentations.PhotoPresentation"),
+        SLIDING("Sliding logos", "org.icpc.tools.presentation.contest.internal.presentations.OrgLogoSlidePresentation"),
+        TEAM("Team detail", "org.icpc.tools.presentation.contest.internal.presentations.TeamDetailPresentation"),
+        LONG("-                                                              -", ""),
         ;
         Preset(String name, String presClass) {
             this.name = name;
@@ -91,13 +99,16 @@ public class MultiView {
                     LOGO_A,
                     TOOLS,
                     INTRO,
+                    PHOTOS,
+                    TEAM,
 
                     Start,
+                    SLIDING,
                     STATUS_COUNTDOWN,
                     POLAR,
-                    FIRST_SOLUTION,
 
                     Early,
+                    FIRST_SOLUTION,
                     BALLOON_MAP,
 
                     Middle,
@@ -107,10 +118,10 @@ public class MultiView {
                     PROBLEM_SUMMARY,
 
                     Freeze,
-                    COUNTDOWN,
+                    POLAR, //COUNTDOWN,
 
                     End,
-                    COUNTDOWN,
+                    POLAR, //COUNTDOWN,
 
                     After,
                     MESSAGE,
@@ -127,7 +138,9 @@ public class MultiView {
 
                     Test,
                     SYNC,
+                    ALIGNMENT,
                     MESSAGE,
+
                     LONG,
             };
         }
