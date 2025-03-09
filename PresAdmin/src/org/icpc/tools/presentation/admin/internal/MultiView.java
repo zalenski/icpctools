@@ -281,6 +281,9 @@ public class MultiView {
                 "EXIT!!!!11!!!1!\nNOW!!!1!\n<--->",
                 "WFNN",
                 "CHNN",
+                "All teams and coaches are invited to exit to the Chill Zone area for\nsnacks and relaxation",
+                "At 4:30 you should make your way out the front doors and walk to the Awards Ceremony at the \"Congress Center\"",
+                "Please exit the contest floor to the Chill Zone for snacks and relaxation",
         });
         this.messagesList = messagesList;
         messagesList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
