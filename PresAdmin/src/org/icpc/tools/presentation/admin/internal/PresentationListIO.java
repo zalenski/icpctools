@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.icpc.tools.contest.Trace;
 import org.icpc.tools.presentation.core.internal.PresentationInfo;
 
 public class PresentationListIO {
@@ -71,6 +72,7 @@ public class PresentationListIO {
 
 	protected static List<CompositePresentationInfo> load() throws IOException {
 		File f = new File(getTempDir(), FILENAME);
+		Trace.trace(Trace.INFO, "Looking for presentation plans in " + f);
 		if (!f.exists())
 			return new ArrayList<>();
 
