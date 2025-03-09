@@ -182,14 +182,18 @@ public class MultiView {
     JList<String> compList;
     JList<String> clientsList;
     JList<String> messagesList;
+    MultiScene scenes = new MultiScene();
     public JPanel createMainPanel() {
         JPanel mainPanel = new JPanel(new BorderLayout());
         this.mainPanel = mainPanel;
         mainPanel.setPreferredSize(new Dimension(1200, 1000));
 
+        JSplitPane sceneSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT);
+        sceneSplit.setResizeWeight(1);
+        mainPanel.add(sceneSplit);
         JSplitPane mainSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
-        mainPanel.add(mainSplit);
-        //mainPanel.setLayout(new GridLayout(1, 2));
+        sceneSplit.add(mainSplit);
+        sceneSplit.add(scenes.createScenesPanel(this));
 
         // Left Panel
         JPanel leftPanel = new JPanel();

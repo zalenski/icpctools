@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.regex.Pattern;
+import static org.icpc.tools.presentation.admin.internal.MultiScene.Scene;
 
 public class Multi48Astana {
     static TreeMap<String, String> arrowMap() {
@@ -87,5 +88,31 @@ public class Multi48Astana {
             }
         }
         return panel;
+    }
+
+    public static List<MultiScene.Scene> makeSomeScenes() {
+        Scene before = new Scene("before",
+                Map.of("left", "preset"));
+        Scene start = new Scene("start",
+                Map.of("left", "preset"));
+        Scene first = new Scene("first",
+                Map.of("left", "preset"));
+        Scene beginning = new Scene("beginning",
+                Map.of("left", "preset"));
+        Scene middle = new Scene("middle",
+                Map.of("left", "preset"));
+        Scene beforeFreeze = new Scene("beforeFreeze",
+                Map.of("left", "preset"));
+        Scene freeze = new Scene("freeze",
+                Map.of("left", "preset"));
+        Scene beforeEnd = new Scene("beforeEnd",
+                Map.of("left", "preset"));
+        Scene end = new Scene("end",
+                Map.of("left", "preset"));
+        Scene after = new Scene("after",
+                Map.of("left", "preset"));
+        Scene exit = new Scene("exit",
+                Map.of("left", "preset"));
+        return List.of(before, start, first, beginning, middle, beforeFreeze, freeze, beforeEnd, end, after, exit);
     }
 }
