@@ -484,6 +484,17 @@ public class MultiView {
                     bc.sendProperty(uids, "hidden", "false");
                 }
                 bc.sendProperty(uids, "presentation", "1100|" + presClass);
+                if (presClass == Preset.TEAM.presClass) {
+                    Trace.trace(Trace.INFO, "Team detail: " + urlName);
+                    if (urlName.indexOf("green-presclient2") >= 0) {
+                        // note: View.getPresentationKey(presClass)
+                        bc.sendProperty(uids, "property[TeamDetailPresentation|637757802]", "prefix:right");
+                    }
+                }
+                if (presClass == Preset.TIMELINE.presClass) {
+                    // note: View.getPresentationKey(presClass)
+                    bc.sendProperty(uids, "property[TimelinePresentation|-1912079608]", "rows:15");
+                }
                 if (!msg.isEmpty()) {
                     int ind = presClass.lastIndexOf('.');
                     String propKey = "property[" + presClass.substring(ind + 1) + "|" + presClass.hashCode() + "]";
