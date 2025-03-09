@@ -670,7 +670,7 @@ public class View {
 		});
 	}
 
-	private static String getPresentationKey(String className) {
+	public static String getPresentationKey(String className) {
 		int ind = className.lastIndexOf(".");
 		return "property[" + className.substring(ind + 1) + "|" + className.hashCode() + "]";
 	}

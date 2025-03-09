@@ -513,8 +513,10 @@ public class MultiView {
                     }
 
                     bc.sendProperty(uids, propKey, arrowMsg);
-                    for (Map.Entry<String, String> entry2 : props.entrySet()) {
-                        bc.sendProperty(uids, propKey, entry2.getKey());
+                    if (props != null) {
+                        for (Map.Entry<String, String> entry2 : props.entrySet()) {
+                            bc.sendProperty(uids, propKey, entry2.getKey());
+                        }
                     }
                 }
             } catch (IOException e) {
@@ -539,7 +541,8 @@ public class MultiView {
                 for (PresentationInfo info : comp.infos) {
                     if (info.getProperties() != null) {
                         for (String prop : info.getProperties()) {
-                            props.put(prop, "");
+                            String key = View.getPresentationKey(info.getClassName());
+                            props.put(key, prop);
                         }
                     }
                 }
