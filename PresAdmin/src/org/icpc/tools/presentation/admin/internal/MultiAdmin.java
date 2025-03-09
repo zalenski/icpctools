@@ -88,10 +88,10 @@ public class MultiAdmin {
 	private static void createAndShowGui(MultiView v) {
 		Trace.trace(Trace.INFO, "JFrame");
 		JFrame frame = new JFrame("Presentation MultiAdmin");
-		swingDark(frame);
 		frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
 		JPanel main = v.createMainPanel();
 		frame.getContentPane().add(main);
+		swingDark(frame);
 		frame.pack();
 		SwingUtilities.invokeLater(() -> v.connect());
 		frame.setVisible(true);
