@@ -7,6 +7,7 @@ import java.awt.geom.Point2D;
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import org.icpc.tools.contest.Trace;
 import org.icpc.tools.contest.model.feed.ContestSource;
@@ -64,10 +65,16 @@ public class PhotoPresentation extends Presentation {
 		job = execute(new Runnable() {
 			@Override
 			public void run() {
-				while (images.size() < CACHE_SIZE) {
+				// One pass is enough to fill the cache. Metadata sidecars and the sync index are
+				// not images and must not be shown.
+				int attempts = 0;
+				while (images.size() < CACHE_SIZE && attempts < filenames.length) {
 					num++;
 					if (num >= filenames.length)
 						num = 0;
+					attempts++;
+					if (!isImageFile(filenames[num]))
+						continue;
 
 					try {
 						images.add(ImageHelper.loadImage("/presentation/photos/" + filenames[num]));
@@ -163,5 +170,13 @@ public class PhotoPresentation extends Presentation {
 	@Override
 	public void setProperty(String value) {
 		mode = value;
+	}
+
+	private static boolean isImageFile(String name) {
+		if (name == null || name.isEmpty())
+			return false;
+		String lower = name.toLowerCase(Locale.ROOT);
+		return lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") || lower.endsWith(".gif")
+				|| lower.endsWith(".bmp") || lower.endsWith(".webp");
 	}
 }

@@ -21,6 +21,14 @@
     -->
   </contest>
 
+  <!-- Sync external albums into present/photos for the existing Photos presentation.
+       apiKey is a Flickr API key; do not commit a real key. refresh is seconds (default 300).
+       Saving this file reloads the source list without a restart.
+  <photos refresh="300" apiKey="">
+    <source uri="flickr://album/ALBUM_ID"/>
+  </photos>
+  -->
+
   <!-- Administrative domains. Uncomment and duplicate to set up multiple presentation domains.
        Each domain must have one or more admins and one or more clients -->
   <!--
