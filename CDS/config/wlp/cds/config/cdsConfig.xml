@@ -22,9 +22,12 @@
   </contest>
 
   <!-- Sync external albums into present/photos for the existing Photos presentation.
-       apiKey is a Flickr API key; do not commit a real key. refresh is seconds (default 300).
-       Saving this file reloads the source list without a restart.
-  <photos refresh="300" apiKey="">
+       Originals are kept in present/original-photos, which is not served (a name starting
+       with "photo", such as photos-originals, would be). maxWidth and maxHeight are optional
+       pixel limits for the copy in present/photos; omit both for a full-size copy.
+       1920x1080 is a sensible slideshow size. apiKey is a Flickr API key; do not commit one.
+       refresh is seconds (default 300). Saving this file reloads the list without a restart.
+  <photos refresh="300" apiKey="" maxWidth="1920" maxHeight="1080">
     <source uri="flickr://album/ALBUM_ID"/>
   </photos>
   -->

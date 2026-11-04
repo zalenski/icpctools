@@ -23,10 +23,18 @@ public final class PhotoSources {
 	public static final class Source {
 		private final String uri;
 		private final String apiKey;
+		private final Integer maxWidth;
+		private final Integer maxHeight;
 
 		public Source(String uri, String apiKey) {
+			this(uri, apiKey, null, null);
+		}
+
+		public Source(String uri, String apiKey, Integer maxWidth, Integer maxHeight) {
 			this.uri = uri;
 			this.apiKey = apiKey;
+			this.maxWidth = maxWidth;
+			this.maxHeight = maxHeight;
 		}
 
 		public String getUri() {
@@ -40,17 +48,33 @@ public final class PhotoSources {
 			return apiKey;
 		}
 
+		/**
+		 * Display-copy width limit, or {@code null} to use {@link Settings#getMaxWidth()}.
+		 */
+		public Integer getMaxWidth() {
+			return maxWidth;
+		}
+
+		/**
+		 * Display-copy height limit, or {@code null} to use {@link Settings#getMaxHeight()}.
+		 */
+		public Integer getMaxHeight() {
+			return maxHeight;
+		}
+
 		@Override
 		public boolean equals(Object obj) {
 			if (!(obj instanceof Source))
 				return false;
 			Source other = (Source) obj;
-			return eq(uri, other.uri) && eq(apiKey, other.apiKey);
+			return eq(uri, other.uri) && eq(apiKey, other.apiKey) && eqInt(maxWidth, other.maxWidth)
+					&& eqInt(maxHeight, other.maxHeight);
 		}
 
 		@Override
 		public int hashCode() {
-			return (uri == null ? 0 : uri.hashCode()) * 31 + (apiKey == null ? 0 : apiKey.hashCode());
+			return (uri == null ? 0 : uri.hashCode()) * 31 + (apiKey == null ? 0 : apiKey.hashCode())
+					+ (maxWidth == null ? 0 : maxWidth.hashCode()) + (maxHeight == null ? 0 : maxHeight.hashCode());
 		}
 	}
 
@@ -59,11 +83,19 @@ public final class PhotoSources {
 
 		private final int refreshSeconds;
 		private final String apiKey;
+		private final Integer maxWidth;
+		private final Integer maxHeight;
 		private final List<Source> sources;
 
 		public Settings(int refreshSeconds, String apiKey, List<Source> sources) {
+			this(refreshSeconds, apiKey, null, null, sources);
+		}
+
+		public Settings(int refreshSeconds, String apiKey, Integer maxWidth, Integer maxHeight, List<Source> sources) {
 			this.refreshSeconds = refreshSeconds;
 			this.apiKey = apiKey;
+			this.maxWidth = maxWidth;
+			this.maxHeight = maxHeight;
 			if (sources == null || sources.isEmpty())
 				this.sources = Collections.emptyList();
 			else
@@ -78,6 +110,20 @@ public final class PhotoSources {
 			return apiKey;
 		}
 
+		/**
+		 * Default display-copy width limit, or {@code null} for a full-size copy.
+		 */
+		public Integer getMaxWidth() {
+			return maxWidth;
+		}
+
+		/**
+		 * Default display-copy height limit, or {@code null} for a full-size copy.
+		 */
+		public Integer getMaxHeight() {
+			return maxHeight;
+		}
+
 		public List<Source> getSources() {
 			return sources;
 		}
@@ -87,12 +133,14 @@ public final class PhotoSources {
 			if (!(obj instanceof Settings))
 				return false;
 			Settings other = (Settings) obj;
-			return refreshSeconds == other.refreshSeconds && eq(apiKey, other.apiKey) && sources.equals(other.sources);
+			return refreshSeconds == other.refreshSeconds && eq(apiKey, other.apiKey) && eqInt(maxWidth, other.maxWidth)
+					&& eqInt(maxHeight, other.maxHeight) && sources.equals(other.sources);
 		}
 
 		@Override
 		public int hashCode() {
-			return refreshSeconds * 31 + (apiKey == null ? 0 : apiKey.hashCode()) + sources.hashCode();
+			return refreshSeconds * 31 + (apiKey == null ? 0 : apiKey.hashCode()) + sources.hashCode()
+					+ (maxWidth == null ? 0 : maxWidth.hashCode()) + (maxHeight == null ? 0 : maxHeight.hashCode());
 		}
 	}
 
@@ -148,6 +196,8 @@ public final class PhotoSources {
 		if (refresh < MIN_REFRESH_SECONDS)
 			refresh = MIN_REFRESH_SECONDS;
 
+		Integer maxWidth = dimension(element, "maxWidth");
+		Integer maxHeight = dimension(element, "maxHeight");
 		List<Source> sources = new ArrayList<>();
 		NodeList nodes = element.getChildNodes();
 		for (int i = 0; i < nodes.getLength(); i++) {
@@ -160,9 +210,26 @@ public final class PhotoSources {
 			String uri = attribute(child, "uri");
 			if (uri == null)
 				continue;
-			sources.add(new Source(uri, attribute(child, "apiKey")));
+			Integer sourceWidth = dimension(child, "maxWidth");
+			Integer sourceHeight = dimension(child, "maxHeight");
+			sources.add(new Source(uri, attribute(child, "apiKey"), sourceWidth != null ? sourceWidth : maxWidth,
+					sourceHeight != null ? sourceHeight : maxHeight));
 		}
-		return new Settings(refresh, attribute(element, "apiKey"), sources);
+		return new Settings(refresh, attribute(element, "apiKey"), maxWidth, maxHeight, sources);
+	}
+
+	private static Integer dimension(Element element, String name) {
+		String text = attribute(element, name);
+		if (text == null)
+			return null;
+		try {
+			int value = Integer.parseInt(text);
+			if (value <= 0)
+				return null;
+			return Integer.valueOf(value);
+		} catch (NumberFormatException e) {
+			return null;
+		}
 	}
 
 	private static String attribute(Element element, String name) {
@@ -178,6 +245,12 @@ public final class PhotoSources {
 	}
 
 	private static boolean eq(String a, String b) {
+		if (a == null)
+			return b == null;
+		return a.equals(b);
+	}
+
+	private static boolean eqInt(Integer a, Integer b) {
 		if (a == null)
 			return b == null;
 		return a.equals(b);

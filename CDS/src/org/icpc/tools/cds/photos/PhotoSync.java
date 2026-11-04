@@ -14,10 +14,22 @@ import java.util.Map;
 import org.icpc.tools.contest.Trace;
 
 /**
- * Downloads one {@link PhotoSource} into the presentation photos folder. Only files recorded in
- * the metadata index are replaced or removed. Photos placed in the folder by hand are kept.
+ * Downloads one {@link PhotoSource}. Originals go in a folder the presentation servlet does not
+ * serve. A display copy, scaled when {@code maxWidth} or {@code maxHeight} is set, goes in
+ * {@code present/photos}. Only files recorded in the metadata index are replaced or removed.
  */
 public final class PhotoSync {
+	/**
+	 * Served at {@code /presentation/photos}. The allow-list is a prefix match on {@code photo}, so
+	 * a sibling named {@code photos-originals} would be served too.
+	 */
+	public static final String DISPLAY_FOLDER = "photos";
+
+	/**
+	 * Not served: {@code original-photos} does not start with an allowed presentation prefix.
+	 */
+	public static final String ORIGINALS_FOLDER = "original-photos";
+
 	public static final class Result {
 		public final int remote;
 		public final int downloaded;
@@ -30,23 +42,27 @@ public final class PhotoSync {
 		}
 	}
 
-	public Result sync(File folder, PhotoSource source) throws IOException {
-		return sync(folder, source, System.currentTimeMillis());
+	public Result sync(File displayFolder, File originalsFolder, PhotoSource source, Integer maxWidth, Integer maxHeight)
+			throws IOException {
+		return sync(displayFolder, originalsFolder, source, maxWidth, maxHeight, System.currentTimeMillis());
 	}
 
-	public Result sync(File folder, PhotoSource source, long now) throws IOException {
-		if (folder == null || source == null)
+	public Result sync(File displayFolder, File originalsFolder, PhotoSource source, Integer maxWidth, Integer maxHeight,
+			long now) throws IOException {
+		if (displayFolder == null || originalsFolder == null || source == null)
 			throw new IOException("Missing photo folder or source");
 
-		// Fail before touching disk so an API or network error leaves the folder as it is.
+		// Fail before touching disk so an API or network error leaves the folders as they are.
 		List<Photo> remote = source.listPhotos();
 		if (remote == null)
 			throw new IOException("Photo source returned no list");
 
-		if (!folder.exists() && !folder.mkdirs())
+		if (!displayFolder.exists() && !displayFolder.mkdirs())
 			throw new IOException("Could not create photo folder");
+		if (!originalsFolder.exists() && !originalsFolder.mkdirs())
+			throw new IOException("Could not create photo originals folder");
 
-		List<PhotoMetadata> index = PhotoMetadata.readIndex(folder);
+		List<PhotoMetadata> index = PhotoMetadata.readIndex(displayFolder);
 		String uri = source.getUri();
 		List<PhotoMetadata> others = new ArrayList<>();
 		Map<String, PhotoMetadata> oursById = new HashMap<>();
@@ -68,7 +84,7 @@ public final class PhotoSync {
 			remoteCount++;
 			PhotoMetadata existing = oursById.get(photo.getId());
 			try {
-				Ensure ensured = ensure(folder, source, photo, existing, now);
+				Ensure ensured = ensure(displayFolder, originalsFolder, source, photo, existing, maxWidth, maxHeight, now);
 				current.add(ensured.meta);
 				if (ensured.downloaded)
 					downloaded++;
@@ -89,14 +105,15 @@ public final class PhotoSync {
 				}
 			}
 			if (!stillThere) {
-				deleteOwned(folder, old);
+				deleteOwned(displayFolder, old.getFile());
+				deleteOwned(originalsFolder, old.getOriginalFile());
 				removed++;
 			}
 		}
 
 		List<PhotoMetadata> merged = new ArrayList<>(others);
 		merged.addAll(current);
-		PhotoMetadata.writeIndex(folder, merged);
+		PhotoMetadata.writeIndex(displayFolder, merged);
 		return new Result(remoteCount, downloaded, removed);
 	}
 
@@ -119,60 +136,93 @@ public final class PhotoSync {
 		}
 	}
 
-	private Ensure ensure(File folder, PhotoSource source, Photo photo, PhotoMetadata existing, long now)
-			throws IOException {
+	private Ensure ensure(File displayFolder, File originalsFolder, PhotoSource source, Photo photo,
+			PhotoMetadata existing, Integer maxWidth, Integer maxHeight, long now) throws IOException {
 		if (existing != null && photo.getOriginalUrl().equals(existing.getOriginalUrl())) {
-			File image = ownedFile(folder, existing.getFile());
-			if (image != null && image.isFile()) {
-				PhotoMetadata updated = existing.withDetails(photo.getTitle(), photo.getOwner(), photo.getLicense());
-				PhotoMetadata.writeSidecar(image, updated);
+			File original = ownedFile(originalsFolder, existing.getOriginalFile());
+			if (original != null && original.isFile()) {
+				boolean sameLimits = sameLimit(existing.getMaxWidth(), maxWidth)
+						&& sameLimit(existing.getMaxHeight(), maxHeight);
+				File display = ownedFile(displayFolder, existing.getFile());
+				if (sameLimits && display != null && display.isFile()) {
+					PhotoMetadata updated = existing.withDetails(photo.getTitle(), photo.getOwner(), photo.getLicense());
+					PhotoMetadata.writeSidecar(display, updated);
+					return new Ensure(updated, false);
+				}
+				String displayName = chooseName(displayFolder, imageFileName(source.getType(), source.getUri(),
+						photo.getId(), photo.getOriginalUrl()), existing.getFile(), source.getUri(), photo.getId(),
+						existing, false);
+				PhotoScale.Written written = PhotoScale.writeDisplay(original, new File(displayFolder, displayName),
+						maxWidth, maxHeight);
+				PhotoMetadata updated = new PhotoMetadata(source.getType(), source.getUri(), photo.getId(),
+						photo.getTitle(), photo.getOwner(), photo.getLicense(), photo.getOriginalUrl(),
+						existing.getFetchTime(), displayName, existing.getOriginalFile(), written.width, written.height,
+						maxWidth, maxHeight);
+				PhotoMetadata.writeSidecar(new File(displayFolder, displayName), updated);
+				if (existing.getFile() != null && !existing.getFile().equals(displayName))
+					deleteOwned(displayFolder, existing.getFile());
 				return new Ensure(updated, false);
 			}
 		}
 
 		String preferred = imageFileName(source.getType(), source.getUri(), photo.getId(), photo.getOriginalUrl());
-
-		String fileName = preferred;
-		if (existing != null && existing.getFile() != null && !existing.getFile().isEmpty()
-				&& isSafeName(existing.getFile()))
-			fileName = existing.getFile();
-		if (!isSafeName(fileName) || fileTakenBySomeoneElse(folder, fileName, source.getUri(), photo.getId(), existing))
-			fileName = alternateName(folder, preferred, source.getUri(), photo.getId(), existing);
-		if (fileName == null)
+		String originalName = chooseName(originalsFolder, preferred,
+				existing == null ? null : existing.getOriginalFile(), source.getUri(), photo.getId(), existing, true);
+		String displayName = chooseName(displayFolder, preferred, existing == null ? null : existing.getFile(),
+				source.getUri(), photo.getId(), existing, false);
+		if (originalName == null || displayName == null)
 			throw new IOException("No free file name for photo " + photo.getId());
 
-		File dest = new File(folder, fileName);
-		File tmp = File.createTempFile("photosync-", ".tmp", folder);
+		File originalDest = new File(originalsFolder, originalName);
+		File displayDest = new File(displayFolder, displayName);
+		File originalTmp = File.createTempFile("photosync-", ".tmp", originalsFolder);
 		try {
-			source.fetchOriginal(photo, tmp);
-			if (!tmp.isFile() || tmp.length() == 0)
+			source.fetchOriginal(photo, originalTmp);
+			if (!originalTmp.isFile() || originalTmp.length() == 0)
 				throw new IOException("Empty image for photo " + photo.getId());
-			move(tmp, dest);
+			PhotoScale.Written written = PhotoScale.writeDisplay(originalTmp, displayDest, maxWidth, maxHeight);
+			move(originalTmp, originalDest);
+			PhotoMetadata meta = new PhotoMetadata(source.getType(), source.getUri(), photo.getId(), photo.getTitle(),
+					photo.getOwner(), photo.getLicense(), photo.getOriginalUrl(), now, displayName, originalName,
+					written.width, written.height, maxWidth, maxHeight);
+			PhotoMetadata.writeSidecar(displayDest, meta);
+			if (existing != null) {
+				if (existing.getFile() != null && !existing.getFile().equals(displayName))
+					deleteOwned(displayFolder, existing.getFile());
+				if (existing.getOriginalFile() != null && !existing.getOriginalFile().equals(originalName))
+					deleteOwned(originalsFolder, existing.getOriginalFile());
+			}
+			return new Ensure(meta, true);
 		} finally {
-			if (tmp.exists())
-				tmp.delete();
+			if (originalTmp.exists())
+				originalTmp.delete();
 		}
-
-		PhotoMetadata meta = new PhotoMetadata(source.getType(), source.getUri(), photo.getId(), photo.getTitle(),
-				photo.getOwner(), photo.getLicense(), photo.getOriginalUrl(), now, fileName);
-		PhotoMetadata.writeSidecar(dest, meta);
-		if (existing != null && existing.getFile() != null && !existing.getFile().equals(fileName))
-			deleteOwned(folder, existing);
-		return new Ensure(meta, true);
 	}
 
-	private static boolean fileTakenBySomeoneElse(File folder, String fileName, String sourceUri, String photoId,
-			PhotoMetadata existing) {
+	private static String chooseName(File folder, String preferred, String existingName, String sourceUri, String photoId,
+			PhotoMetadata existing, boolean original) {
+		String fileName = preferred;
+		if (isSafeName(existingName))
+			fileName = existingName;
+		if (!isSafeName(fileName) || fileTaken(folder, fileName, sourceUri, photoId, existing, original))
+			fileName = alternateName(folder, preferred, sourceUri, photoId, existing, original);
+		return fileName;
+	}
+
+	private static boolean fileTaken(File folder, String fileName, String sourceUri, String photoId,
+			PhotoMetadata existing, boolean original) {
 		File file = new File(folder, fileName);
 		if (!file.exists())
 			return false;
-		return !isOurs(folder, fileName, sourceUri, photoId, existing);
+		return !isOurs(folder, fileName, sourceUri, photoId, existing, original);
 	}
 
 	private static boolean isOurs(File folder, String fileName, String sourceUri, String photoId,
-			PhotoMetadata existing) {
-		if (existing != null && fileName.equals(existing.getFile()))
+			PhotoMetadata existing, boolean original) {
+		if (existing != null && fileName.equals(original ? existing.getOriginalFile() : existing.getFile()))
 			return true;
+		if (original)
+			return false;
 		try {
 			PhotoMetadata sidecar = PhotoMetadata.readSidecar(new File(folder, fileName));
 			return sidecar != null && sourceUri.equals(sidecar.getSourceUri()) && photoId.equals(sidecar.getPhotoId());
@@ -182,22 +232,22 @@ public final class PhotoSync {
 	}
 
 	private static String alternateName(File folder, String preferred, String sourceUri, String photoId,
-			PhotoMetadata existing) {
+			PhotoMetadata existing, boolean original) {
 		int dot = preferred.lastIndexOf('.');
 		String stem = dot > 0 ? preferred.substring(0, dot) : preferred;
 		String ext = dot > 0 ? preferred.substring(dot) : "";
 		for (int n = 2; n <= 20; n++) {
 			String candidate = stem + "-" + n + ext;
-			if (!fileTakenBySomeoneElse(folder, candidate, sourceUri, photoId, existing))
+			if (!fileTaken(folder, candidate, sourceUri, photoId, existing, original))
 				return candidate;
 		}
 		return null;
 	}
 
-	private static void deleteOwned(File folder, PhotoMetadata meta) {
-		if (meta == null || !isSafeName(meta.getFile()) || PhotoMetadata.INDEX_NAME.equals(meta.getFile()))
+	private static void deleteOwned(File folder, String name) {
+		if (!isSafeName(name) || PhotoMetadata.INDEX_NAME.equals(name))
 			return;
-		File image = new File(folder, meta.getFile());
+		File image = new File(folder, name);
 		try {
 			if (!isInside(folder, image))
 				return;
@@ -233,6 +283,12 @@ public final class PhotoSync {
 		if (name == null || name.isEmpty() || name.indexOf('/') >= 0 || name.indexOf('\\') >= 0 || name.contains(".."))
 			return false;
 		return true;
+	}
+
+	private static boolean sameLimit(Integer a, Integer b) {
+		if (a == null || a.intValue() <= 0)
+			return b == null || b.intValue() <= 0;
+		return a.equals(b);
 	}
 
 	private static void move(File tmp, File dest) throws IOException {

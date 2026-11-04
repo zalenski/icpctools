@@ -51,6 +51,30 @@ public class PhotoSourcesTest {
 		assertEquals("flickr://album/10", sources.get().getSources().get(0).getUri());
 	}
 
+	@Test
+	public void sourceLimitOverridesOneParentLimit() throws Exception {
+		Document document = DocumentBuilderFactory.newInstance().newDocumentBuilder().newDocument();
+		Element photos = document.createElement("photos");
+		photos.setAttribute("maxWidth", "1920");
+		photos.setAttribute("maxHeight", "1080");
+		Element source = document.createElement("source");
+		source.setAttribute("uri", "flickr://album/9");
+		source.setAttribute("maxWidth", "800");
+		photos.appendChild(source);
+
+		PhotoSources.Settings settings = PhotoSources.parse(photos);
+		assertEquals(Integer.valueOf(1920), settings.getMaxWidth());
+		assertEquals(Integer.valueOf(1080), settings.getMaxHeight());
+		assertEquals(Integer.valueOf(800), settings.getSources().get(0).getMaxWidth());
+		assertEquals(Integer.valueOf(1080), settings.getSources().get(0).getMaxHeight());
+
+		PhotoSources.Settings unset = PhotoSources.parse(photos("refresh-missing", null));
+		assertEquals(null, unset.getMaxWidth());
+		assertEquals(null, unset.getMaxHeight());
+		assertEquals(null, unset.getSources().get(0).getMaxWidth());
+		assertEquals(null, unset.getSources().get(0).getMaxHeight());
+	}
+
 	private static Element photos(String refresh, String apiKey) throws Exception {
 		Document document = DocumentBuilderFactory.newInstance().newDocumentBuilder().newDocument();
 		Element photos = document.createElement("photos");

@@ -50,13 +50,19 @@ public final class PhotoSyncService {
 		if (!changed && lastSync != 0 && now - lastSync < intervalMs)
 			return;
 
-		File folder = new File(CDSConfig.getFolder(), "present" + File.separator + "photos");
+		File root = new File(CDSConfig.getFolder(), "present");
+		File display = new File(root, PhotoSync.DISPLAY_FOLDER);
+		// original-photos is outside the presentation allow-list. photos-originals would be served,
+		// because that list matches the prefix "photo".
+		File originals = new File(root, PhotoSync.ORIGINALS_FOLDER);
 		PhotoSync sync = new PhotoSync();
 		for (PhotoSources.Source configured : settings.getSources()) {
 			String key = configured.getApiKey() != null ? configured.getApiKey() : settings.getApiKey();
+			Integer maxWidth = configured.getMaxWidth() != null ? configured.getMaxWidth() : settings.getMaxWidth();
+			Integer maxHeight = configured.getMaxHeight() != null ? configured.getMaxHeight() : settings.getMaxHeight();
 			try {
 				PhotoSource source = PhotoSourceRegistry.create(configured.getUri(), key);
-				PhotoSync.Result result = sync.sync(folder, source);
+				PhotoSync.Result result = sync.sync(display, originals, source, maxWidth, maxHeight);
 				Trace.trace(Trace.INFO, "Photo sync " + source.getUri() + " listed " + result.remote + ", downloaded "
 						+ result.downloaded + ", removed " + result.removed);
 			} catch (Exception e) {
@@ -66,17 +72,27 @@ public final class PhotoSyncService {
 			}
 		}
 		lastSync = now;
-		lastSignature = signature;
+		lastSignature = signature(settings);
 	}
 
 	private static String signature(PhotoSources.Settings settings) {
 		StringBuilder sb = new StringBuilder();
+		sb.append(settings.getMaxWidth() == null ? "-" : settings.getMaxWidth().toString());
+		sb.append('\n');
+		sb.append(settings.getMaxHeight() == null ? "-" : settings.getMaxHeight().toString());
 		for (PhotoSources.Source source : settings.getSources()) {
+			Integer maxWidth = source.getMaxWidth() != null ? source.getMaxWidth() : settings.getMaxWidth();
+			Integer maxHeight = source.getMaxHeight() != null ? source.getMaxHeight() : settings.getMaxHeight();
+			sb.append('\n');
 			sb.append(source.getUri() == null ? "" : source.getUri());
 			sb.append('\n');
 			sb.append(source.getApiKey() == null ? "" : source.getApiKey());
 			sb.append('\n');
+			sb.append(maxWidth == null ? "-" : maxWidth.toString());
+			sb.append('\n');
+			sb.append(maxHeight == null ? "-" : maxHeight.toString());
 		}
+		sb.append('\n');
 		sb.append(settings.getApiKey() == null ? "" : settings.getApiKey());
 		return sb.toString();
 	}

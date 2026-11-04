@@ -34,9 +34,21 @@ public final class PhotoMetadata {
 	private final String originalUrl;
 	private final long fetchTime;
 	private final String file;
+	private final String originalFile;
+	private final int width;
+	private final int height;
+	private final Integer maxWidth;
+	private final Integer maxHeight;
 
 	public PhotoMetadata(String sourceType, String sourceUri, String photoId, String title, String owner,
 			String license, String originalUrl, long fetchTime, String file) {
+		this(sourceType, sourceUri, photoId, title, owner, license, originalUrl, fetchTime, file, null, 0, 0, null,
+				null);
+	}
+
+	public PhotoMetadata(String sourceType, String sourceUri, String photoId, String title, String owner,
+			String license, String originalUrl, long fetchTime, String file, String originalFile, int width, int height,
+			Integer maxWidth, Integer maxHeight) {
 		this.sourceType = sourceType;
 		this.sourceUri = sourceUri;
 		this.photoId = photoId;
@@ -46,6 +58,11 @@ public final class PhotoMetadata {
 		this.originalUrl = originalUrl;
 		this.fetchTime = fetchTime;
 		this.file = file;
+		this.originalFile = originalFile;
+		this.width = width;
+		this.height = height;
+		this.maxWidth = maxWidth;
+		this.maxHeight = maxHeight;
 	}
 
 	public String getSourceType() {
@@ -84,9 +101,29 @@ public final class PhotoMetadata {
 		return file;
 	}
 
+	public String getOriginalFile() {
+		return originalFile;
+	}
+
+	public int getWidth() {
+		return width;
+	}
+
+	public int getHeight() {
+		return height;
+	}
+
+	public Integer getMaxWidth() {
+		return maxWidth;
+	}
+
+	public Integer getMaxHeight() {
+		return maxHeight;
+	}
+
 	public PhotoMetadata withDetails(String title2, String owner2, String license2) {
-		return new PhotoMetadata(sourceType, sourceUri, photoId, title2, owner2, license2, originalUrl, fetchTime,
-				file);
+		return new PhotoMetadata(sourceType, sourceUri, photoId, title2, owner2, license2, originalUrl, fetchTime, file,
+				originalFile, width, height, maxWidth, maxHeight);
 	}
 
 	public JsonObject toJson() {
@@ -100,15 +137,35 @@ public final class PhotoMetadata {
 		obj.put("originalUrl", originalUrl);
 		obj.put("fetchTime", Long.valueOf(fetchTime));
 		obj.put("file", file);
+		if (originalFile != null)
+			obj.put("originalFile", originalFile);
+		obj.put("width", Integer.valueOf(width));
+		obj.put("height", Integer.valueOf(height));
+		if (maxWidth != null)
+			obj.put("maxWidth", maxWidth);
+		if (maxHeight != null)
+			obj.put("maxHeight", maxHeight);
 		return obj;
 	}
 
 	public static PhotoMetadata fromJson(JsonObject obj) {
 		if (obj == null)
 			return null;
+		int w = obj.getInt("width");
+		int h = obj.getInt("height");
 		return new PhotoMetadata(obj.getString("sourceType"), obj.getString("sourceUri"), obj.getString("photoId"),
 				obj.getString("title"), obj.getString("owner"), obj.getString("license"), obj.getString("originalUrl"),
-				obj.getLong("fetchTime"), obj.getString("file"));
+				obj.getLong("fetchTime"), obj.getString("file"), obj.getString("originalFile"), w < 0 ? 0 : w,
+				h < 0 ? 0 : h, dimension(obj, "maxWidth"), dimension(obj, "maxHeight"));
+	}
+
+	private static Integer dimension(JsonObject obj, String key) {
+		if (obj == null || !obj.containsKey(key) || obj.isNull(key))
+			return null;
+		int value = obj.getInt(key);
+		if (value <= 0)
+			return null;
+		return Integer.valueOf(value);
 	}
 
 	public static File sidecarFile(File imageFile) {
