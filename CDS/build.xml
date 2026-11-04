@@ -121,6 +121,7 @@
   <target name="build" depends="init">
     <javac debug="true" debuglevel="${debuglevel}" destdir="bin" encoding="UTF-8" includeantruntime="false" release="${release}">
       <src path="src"/>
+      <exclude name="**/*Test.java"/>
       <classpath refid="CDS.classpath"/>
     </javac>
   </target>

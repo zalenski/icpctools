@@ -90,6 +90,9 @@ public class ReportGenerator {
 		}
 
 		for (ISubmission s : contest.getSubmissions()) {
+			if (!isVisibleTeamSubmission(contest, s))
+				continue;
+
 			String id = s.getProblemId();
 			Map<String, Object> map = null;
 			for (Map<String, Object> m : list) {
@@ -141,6 +144,9 @@ public class ReportGenerator {
 		}
 
 		for (ISubmission s : contest.getSubmissions()) {
+			if (!isVisibleTeamSubmission(contest, s))
+				continue;
+
 			String id = s.getLanguageId();
 			Map<String, Object> map = null;
 			for (Map<String, Object> m : list) {
@@ -160,6 +166,30 @@ public class ReportGenerator {
 		}
 
 		writeList(en, list);
+	}
+
+	/**
+	 * Scoreboard rows come from teams that are not hidden. Staff and admin contests still
+	 * include those teams (jury teams are marked hidden; there is no separate jury flag), so
+	 * report totals have to skip them or accepted counts will not match the scoreboard.
+	 */
+	protected static boolean isVisibleTeamSubmission(IContest contest, ISubmission submission) {
+		if (submission == null)
+			return false;
+
+		return !contest.isTeamHidden(contest.getTeamById(submission.getTeamId()));
+	}
+
+	protected static boolean isVisibleTeamRun(IContest contest, IRun run) {
+		IJudgement judgement = contest.getJudgementById(run.getJudgementId());
+		if (judgement == null)
+			return true;
+
+		ISubmission submission = contest.getSubmissionById(judgement.getSubmissionId());
+		if (submission == null)
+			return true;
+
+		return isVisibleTeamSubmission(contest, submission);
 	}
 
 	protected static void updateForJudgement(IContest contest, Map<String, Object> map, String jtId) {
@@ -199,6 +229,9 @@ public class ReportGenerator {
 		}
 
 		for (IRun r : contest.getRuns()) {
+			if (!isVisibleTeamRun(contest, r))
+				continue;
+
 			String id = r.getJudgementTypeId();
 			Map<String, Object> map = null;
 			for (Map<String, Object> m : list) {
