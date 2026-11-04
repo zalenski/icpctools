@@ -12,6 +12,7 @@ import java.util.Locale;
 import org.icpc.tools.contest.Trace;
 import org.icpc.tools.contest.model.feed.ContestSource;
 import org.icpc.tools.presentation.contest.internal.ImageHelper;
+import org.icpc.tools.presentation.contest.internal.ImageScaler;
 import org.icpc.tools.presentation.core.Presentation;
 
 public class PhotoPresentation extends Presentation {
@@ -24,7 +25,8 @@ public class PhotoPresentation extends Presentation {
 	private String mode = null;
 
 	private BufferedImage image;
-	private final List<BufferedImage> images = new ArrayList<>(4);
+	private LoadedPhoto current;
+	private final List<LoadedPhoto> images = new ArrayList<>(4);
 	private int num;
 	private String[] filenames;
 	private Presentation.Job job;
@@ -77,7 +79,10 @@ public class PhotoPresentation extends Presentation {
 						continue;
 
 					try {
-						images.add(ImageHelper.loadImage("/presentation/photos/" + filenames[num]));
+						LoadedPhoto loaded = new LoadedPhoto(
+								ImageHelper.loadImage("/presentation/photos/" + filenames[num]));
+						loaded.view(width, height);
+						images.add(loaded);
 					} catch (Exception e) {
 						Trace.trace(Trace.ERROR, "Could not load image " + filenames[num] + ": " + e.getMessage());
 					}
@@ -93,14 +98,28 @@ public class PhotoPresentation extends Presentation {
 		if (images.isEmpty())
 			return;
 
-		BufferedImage old = image;
-		image = images.remove(0);
-		if (old != null)
-			old.flush();
+		if (current != null)
+			current.dispose();
+		current = images.remove(0);
+		image = current.view(width, height);
 
 		setupImage();
 
 		preloadImages();
+	}
+
+	@Override
+	public void setSize(Dimension d) {
+		int oldWidth = width;
+		int oldHeight = height;
+		super.setSize(d);
+		if (current == null || (d.width == oldWidth && d.height == oldHeight))
+			return;
+		BufferedImage view = current.view(width, height);
+		if (view != image) {
+			image = view;
+			setupImage();
+		}
 	}
 
 	@Override
@@ -139,6 +158,13 @@ public class PhotoPresentation extends Presentation {
 
 	@Override
 	public void paint(Graphics2D g) {
+		if (current != null) {
+			BufferedImage view = current.view(width, height);
+			if (view != image) {
+				image = view;
+				setupImage();
+			}
+		}
 		if (image == null || p1 == null || p2 == null) {
 			paintHelp(g, HELP, "");
 			return;
@@ -170,6 +196,57 @@ public class PhotoPresentation extends Presentation {
 	@Override
 	public void setProperty(String value) {
 		mode = value;
+	}
+
+	/**
+	 * Pixel size of the bitmap used for panning: the screen-covering size times 1.1, matching
+	 * {@code s1 = s2 * 1.1}. Returns null when that would not be a downscale.
+	 */
+	static Dimension scaledSize(int imageWidth, int imageHeight, int screenWidth, int screenHeight) {
+		if (imageWidth <= 0 || imageHeight <= 0 || screenWidth <= 0 || screenHeight <= 0)
+			return null;
+		float cover = Math.max(screenWidth / (float) imageWidth, screenHeight / (float) imageHeight);
+		float zoom = cover * 1.1f;
+		if (zoom >= 1f)
+			return null;
+		int targetWidth = Math.round(imageWidth * zoom);
+		int targetHeight = Math.round(imageHeight * zoom);
+		if (targetWidth >= imageWidth || targetHeight >= imageHeight || targetWidth < 1 || targetHeight < 1)
+			return null;
+		return new Dimension(targetWidth, targetHeight);
+	}
+
+	private static final class LoadedPhoto {
+		private final BufferedImage source;
+		private BufferedImage view;
+		private int forWidth = -1;
+		private int forHeight = -1;
+
+		private LoadedPhoto(BufferedImage source) {
+			this.source = source;
+		}
+
+		private BufferedImage view(int screenWidth, int screenHeight) {
+			if (view != null && forWidth == screenWidth && forHeight == screenHeight)
+				return view;
+			Dimension target = scaledSize(source.getWidth(), source.getHeight(), screenWidth, screenHeight);
+			BufferedImage next = target == null ? source : ImageScaler.scaleDown(source, target.width, target.height);
+			if (next == null)
+				next = source;
+			if (this.view != null && this.view != source && this.view != next)
+				this.view.flush();
+			this.view = next;
+			forWidth = screenWidth;
+			forHeight = screenHeight;
+			return this.view;
+		}
+
+		private void dispose() {
+			if (view != null && view != source)
+				view.flush();
+			if (source != null)
+				source.flush();
+		}
 	}
 
 	private static boolean isImageFile(String name) {
