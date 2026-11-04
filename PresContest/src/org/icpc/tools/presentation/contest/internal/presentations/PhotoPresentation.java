@@ -1,5 +1,6 @@
 package org.icpc.tools.presentation.contest.internal.presentations;
 
+import java.awt.AlphaComposite;
 import java.awt.Dimension;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
@@ -18,6 +19,7 @@ public class PhotoPresentation extends Presentation {
 			"Place photos on the CDS in {icpc.cds.config}/present/photos." };
 
 	private static final int SECONDS_PER_PHOTO = 12;
+	private static final int FADE_MS = 1000;
 	private static final int CACHE_SIZE = 2;
 
 	private String mode = null;
@@ -30,6 +32,8 @@ public class PhotoPresentation extends Presentation {
 
 	private Point2D.Float p1, p2;
 	private float s1, s2;
+	private PhotoPan outgoing;
+	private boolean painted;
 
 	@Override
 	public void init() {
@@ -88,7 +92,7 @@ public class PhotoPresentation extends Presentation {
 
 		BufferedImage old = image;
 		image = images.remove(0);
-		if (old != null)
+		if (old != null && !retainOutgoing(old))
 			old.flush();
 
 		setupImage();
@@ -137,27 +141,108 @@ public class PhotoPresentation extends Presentation {
 			return;
 		}
 
-		float dt = getRepeatTimeMs() / SECONDS_PER_PHOTO / 1000f;
-		if (dt > 1f)
-			dt = 1f;
+		long visible = getRepeatTimeMs();
+		PhotoPan.draw(g, image, p1, p2, s1, s2, PhotoPan.motionDt(visible), mode, 1f);
+		painted = true;
 
-		double dx = p1.x * (1f - dt) + p2.x * dt;
-		double dy = p1.y * (1f - dt) + p2.y * dt;
-		double ds = s1 * (1f - dt) + s2 * dt;
+		if (outgoing == null)
+			return;
+		if (visible >= FADE_MS) {
+			outgoing.release();
+			outgoing = null;
+			return;
+		}
+		outgoing.draw(g, PhotoPan.motionDt(SECONDS_PER_PHOTO * 1000L + visible), mode, PhotoPan.fadeAlpha(visible));
+	}
 
-		Graphics2D gg = (Graphics2D) g.create();
-		gg.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-		if ("h".equals(mode))
-			gg.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
-		else if ("l".equals(mode))
-			gg.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
-		else
-			gg.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-		gg.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
-		gg.scale(ds, ds);
-		gg.translate(-dx, -dy);
-		gg.drawImage(image, 0, 0, null);
-		gg.dispose();
+	private boolean retainOutgoing(BufferedImage old) {
+		if (outgoing != null) {
+			outgoing.release();
+			outgoing = null;
+		}
+		if (!painted || p1 == null || p2 == null)
+			return false;
+		outgoing = new PhotoPan(old, p1, p2, s1, s2);
+		return true;
+	}
+
+	/**
+	 * One photo's Ken Burns state. {@code dt} runs from 0 at the start of the fade-in to 1 at the
+	 * end of the fade-out, a span of {@code SECONDS_PER_PHOTO} plus {@code FADE_MS}.
+	 */
+	static final class PhotoPan {
+		final BufferedImage image;
+		final Point2D.Float p1;
+		final Point2D.Float p2;
+		final float s1;
+		final float s2;
+
+		PhotoPan(BufferedImage image, Point2D.Float p1, Point2D.Float p2, float s1, float s2) {
+			this.image = image;
+			this.p1 = p1;
+			this.p2 = p2;
+			this.s1 = s1;
+			this.s2 = s2;
+		}
+
+		void release() {
+			image.flush();
+		}
+
+		void draw(Graphics2D g, float dt, String mode) {
+			draw(g, dt, mode, 1f);
+		}
+
+		void draw(Graphics2D g, float dt, String mode, float alpha) {
+			draw(g, image, p1, p2, s1, s2, dt, mode, alpha);
+		}
+
+		static long motionSpanMs() {
+			return SECONDS_PER_PHOTO * 1000L + FADE_MS;
+		}
+
+		static float motionDt(long visibleMs) {
+			long span = motionSpanMs();
+			if (visibleMs <= 0)
+				return 0f;
+			if (visibleMs >= span)
+				return 1f;
+			return visibleMs / (float) span;
+		}
+
+		static float fadeAlpha(long elapsedMs) {
+			if (elapsedMs <= 0)
+				return 1f;
+			if (elapsedMs >= FADE_MS)
+				return 0f;
+			return 1f - elapsedMs / (float) FADE_MS;
+		}
+
+		static void draw(Graphics2D g, BufferedImage image, Point2D.Float p1, Point2D.Float p2, float s1, float s2,
+				float dt, String mode, float alpha) {
+			if (image == null || p1 == null || p2 == null || alpha <= 0f)
+				return;
+
+			double dx = p1.x * (1f - dt) + p2.x * dt;
+			double dy = p1.y * (1f - dt) + p2.y * dt;
+			double ds = s1 * (1f - dt) + s2 * dt;
+
+			Graphics2D gg = (Graphics2D) g.create();
+			gg.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+			if ("h".equals(mode))
+				gg.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+			else if ("l".equals(mode))
+				gg.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+			else
+				gg.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+			gg.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+			if (alpha < 1f)
+				gg.setComposite(AlphaComposite.SrcOver.derive(alpha));
+			gg.scale(ds, ds);
+			gg.translate(-dx, -dy);
+			gg.drawImage(image, 0, 0, null);
+			gg.dispose();
+		}
 	}
 
 	@Override
