@@ -5,13 +5,16 @@ import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.geom.Point2D;
 import java.awt.image.BufferedImage;
+import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
+import javax.imageio.ImageIO;
+
 import org.icpc.tools.contest.Trace;
 import org.icpc.tools.contest.model.feed.ContestSource;
-import org.icpc.tools.presentation.contest.internal.ImageHelper;
 import org.icpc.tools.presentation.contest.internal.ImageScaler;
 import org.icpc.tools.presentation.core.Presentation;
 
@@ -22,14 +25,21 @@ public class PhotoPresentation extends Presentation {
 	private static final int SECONDS_PER_PHOTO = 12;
 	private static final int CACHE_SIZE = 2;
 
+	/**
+	 * Wait until the presentation size stops changing before reading photos again.
+	 */
+	static final long RESIZE_QUIET_MS = 200;
+
 	private String mode = null;
 
-	private BufferedImage image;
-	private LoadedPhoto current;
+	private volatile BufferedImage image;
+	private volatile LoadedPhoto current;
 	private final List<LoadedPhoto> images = new ArrayList<>(4);
 	private int num;
 	private String[] filenames;
 	private Presentation.Job job;
+	private int resizeGeneration;
+	private boolean resizeScheduled;
 
 	private Point2D.Float p1, p2;
 	private float s1, s2;
@@ -55,9 +65,6 @@ public class PhotoPresentation extends Presentation {
 	}
 
 	private void preloadImages() {
-		if (images.size() >= CACHE_SIZE)
-			return;
-
 		if (filenames == null || filenames.length == 0)
 			return;
 
@@ -70,7 +77,7 @@ public class PhotoPresentation extends Presentation {
 				// One pass is enough to fill the cache. Metadata sidecars and the sync index are
 				// not images and must not be shown.
 				int attempts = 0;
-				while (images.size() < CACHE_SIZE && attempts < filenames.length) {
+				while (cachedCount() < CACHE_SIZE && attempts < filenames.length) {
 					num++;
 					if (num >= filenames.length)
 						num = 0;
@@ -78,11 +85,14 @@ public class PhotoPresentation extends Presentation {
 					if (!isImageFile(filenames[num]))
 						continue;
 
+					String path = "/presentation/photos/" + filenames[num];
 					try {
-						LoadedPhoto loaded = new LoadedPhoto(
-								ImageHelper.loadImage("/presentation/photos/" + filenames[num]));
-						loaded.view(width, height);
-						images.add(loaded);
+						File file = ContestSource.getInstance().getFile(path);
+						if (file == null)
+							throw new IOException("No image found");
+						LoadedPhoto loaded = LoadedPhoto.load(file, width, height);
+						if (!offer(loaded))
+							loaded.dispose();
 					} catch (Exception e) {
 						Trace.trace(Trace.ERROR, "Could not load image " + filenames[num] + ": " + e.getMessage());
 					}
@@ -94,16 +104,37 @@ public class PhotoPresentation extends Presentation {
 		});
 	}
 
+	private int cachedCount() {
+		synchronized (images) {
+			return images.size();
+		}
+	}
+
+	private boolean offer(LoadedPhoto loaded) {
+		synchronized (images) {
+			if (images.size() >= CACHE_SIZE)
+				return false;
+			images.add(loaded);
+			return true;
+		}
+	}
+
 	private void switchToNextImage() {
-		if (images.isEmpty())
-			return;
+		LoadedPhoto next;
+		synchronized (images) {
+			if (images.isEmpty())
+				return;
+			next = images.remove(0);
+		}
 
-		if (current != null)
-			current.dispose();
-		current = images.remove(0);
-		image = current.view(width, height);
+		LoadedPhoto previous = current;
+		current = next;
+		image = next.getView();
+		if (previous != null)
+			previous.dispose();
 
-		setupImage();
+		if (image != null)
+			setupImage();
 
 		preloadImages();
 	}
@@ -113,13 +144,74 @@ public class PhotoPresentation extends Presentation {
 		int oldWidth = width;
 		int oldHeight = height;
 		super.setSize(d);
-		if (current == null || (d.width == oldWidth && d.height == oldHeight))
+		if (d.width == oldWidth && d.height == oldHeight)
 			return;
-		BufferedImage view = current.view(width, height);
-		if (view != image) {
-			image = view;
-			setupImage();
+		if (current == null && cachedCount() == 0)
+			return;
+		scheduleResize();
+	}
+
+	/**
+	 * Coalesce a burst of resizes into one reload, on a worker thread. The current view stays on
+	 * screen until the new bitmap is ready.
+	 */
+	private void scheduleResize() {
+		synchronized (this) {
+			resizeGeneration++;
+			if (resizeScheduled)
+				return;
+			resizeScheduled = true;
 		}
+		execute(new Runnable() {
+			@Override
+			public void run() {
+				try {
+					int applied = -1;
+					while (true) {
+						int seen;
+						synchronized (PhotoPresentation.this) {
+							seen = resizeGeneration;
+						}
+						Thread.sleep(RESIZE_QUIET_MS);
+						int w;
+						int h;
+						synchronized (PhotoPresentation.this) {
+							if (resizeGeneration != seen)
+								continue;
+							w = width;
+							h = height;
+							resizeScheduled = false;
+						}
+						rescaleLoaded(w, h);
+						applied = seen;
+						synchronized (PhotoPresentation.this) {
+							if (resizeGeneration != applied) {
+								resizeScheduled = true;
+								continue;
+							}
+						}
+						break;
+					}
+				} catch (InterruptedException e) {
+					synchronized (PhotoPresentation.this) {
+						resizeScheduled = false;
+					}
+					Thread.currentThread().interrupt();
+				}
+			}
+		});
+	}
+
+	private void rescaleLoaded(int screenWidth, int screenHeight) {
+		LoadedPhoto shown = current;
+		LoadedPhoto[] pending;
+		synchronized (images) {
+			pending = images.toArray(new LoadedPhoto[images.size()]);
+		}
+		if (shown != null)
+			shown.reload(screenWidth, screenHeight);
+		for (int i = 0; i < pending.length; i++)
+			pending[i].reload(screenWidth, screenHeight);
 	}
 
 	@Override
@@ -158,9 +250,10 @@ public class PhotoPresentation extends Presentation {
 
 	@Override
 	public void paint(Graphics2D g) {
-		if (current != null) {
-			BufferedImage view = current.view(width, height);
-			if (view != image) {
+		LoadedPhoto shown = current;
+		if (shown != null) {
+			BufferedImage view = shown.getView();
+			if (view != null && view != image) {
 				image = view;
 				setupImage();
 			}
@@ -216,36 +309,119 @@ public class PhotoPresentation extends Presentation {
 		return new Dimension(targetWidth, targetHeight);
 	}
 
-	private static final class LoadedPhoto {
-		private final BufferedImage source;
+	/**
+	 * The bitmap on screen, plus the local file it was read from. The full-resolution image is not
+	 * retained.
+	 */
+	static final class LoadedPhoto {
+		private final File file;
 		private BufferedImage view;
+		private int sourceWidth;
+		private int sourceHeight;
 		private int forWidth = -1;
 		private int forHeight = -1;
+		private boolean disposed;
 
-		private LoadedPhoto(BufferedImage source) {
-			this.source = source;
+		private LoadedPhoto(File file) {
+			this.file = file;
 		}
 
-		private BufferedImage view(int screenWidth, int screenHeight) {
+		static LoadedPhoto load(File file, int screenWidth, int screenHeight) throws IOException {
+			LoadedPhoto photo = new LoadedPhoto(file);
+			if (screenWidth <= 0 || screenHeight <= 0)
+				return photo;
+			if (!photo.reload(screenWidth, screenHeight))
+				throw new IOException("Could not read " + file.getName());
+			return photo;
+		}
+
+		/**
+		 * @return false when a first read fails and there is no view to keep
+		 */
+		boolean reload(int screenWidth, int screenHeight) {
+			if (screenWidth <= 0 || screenHeight <= 0)
+				return view != null;
+			synchronized (this) {
+				if (disposed)
+					return false;
+				if (!needsReload(screenWidth, screenHeight))
+					return true;
+			}
+
+			BufferedImage source = null;
+			try {
+				source = ImageIO.read(file);
+				if (source == null)
+					throw new IOException("Unknown image type");
+				int sw = source.getWidth();
+				int sh = source.getHeight();
+				Dimension target = scaledSize(sw, sh, screenWidth, screenHeight);
+				BufferedImage next = source;
+				if (target != null) {
+					BufferedImage scaled = ImageScaler.scaleDown(source, target.width, target.height);
+					if (scaled != null && scaled != source)
+						next = scaled;
+				}
+				if (next != source)
+					source.flush();
+				source = null;
+
+				BufferedImage previous;
+				synchronized (this) {
+					if (disposed) {
+						next.flush();
+						return false;
+					}
+					previous = view;
+					view = next;
+					sourceWidth = sw;
+					sourceHeight = sh;
+					forWidth = screenWidth;
+					forHeight = screenHeight;
+				}
+				if (previous != null && previous != next)
+					previous.flush();
+				return true;
+			} catch (Exception e) {
+				boolean kept;
+				synchronized (this) {
+					kept = view != null;
+				}
+				if (kept)
+					Trace.trace(Trace.WARNING, "Could not rescale photo " + file.getName() + ": " + e.getMessage());
+				return kept;
+			} finally {
+				if (source != null)
+					source.flush();
+			}
+		}
+
+		private boolean needsReload(int screenWidth, int screenHeight) {
 			if (view != null && forWidth == screenWidth && forHeight == screenHeight)
+				return false;
+			if (view == null || sourceWidth <= 0 || sourceHeight <= 0)
+				return true;
+			Dimension target = scaledSize(sourceWidth, sourceHeight, screenWidth, screenHeight);
+			if (target == null)
+				return view.getWidth() != sourceWidth || view.getHeight() != sourceHeight;
+			return view.getWidth() != target.width || view.getHeight() != target.height;
+		}
+
+		BufferedImage getView() {
+			synchronized (this) {
 				return view;
-			Dimension target = scaledSize(source.getWidth(), source.getHeight(), screenWidth, screenHeight);
-			BufferedImage next = target == null ? source : ImageScaler.scaleDown(source, target.width, target.height);
-			if (next == null)
-				next = source;
-			if (this.view != null && this.view != source && this.view != next)
-				this.view.flush();
-			this.view = next;
-			forWidth = screenWidth;
-			forHeight = screenHeight;
-			return this.view;
+			}
 		}
 
 		private void dispose() {
-			if (view != null && view != source)
-				view.flush();
-			if (source != null)
-				source.flush();
+			BufferedImage old;
+			synchronized (this) {
+				disposed = true;
+				old = view;
+				view = null;
+			}
+			if (old != null)
+				old.flush();
 		}
 	}
 
