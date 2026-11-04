@@ -1,7 +1,9 @@
 package org.icpc.tools.contest.model.internal.account;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.icpc.tools.contest.model.IAccount;
 import org.icpc.tools.contest.model.IAward;
@@ -40,7 +42,8 @@ import org.icpc.tools.contest.model.internal.Team;
  * <li>Problems before contest start (and no test data count or package after)</li>
  * <li>Submission files and entry point, language, and reaction videos</li>
  * <li>Judgemewnts after the freeze (and max runtime always)</li>
- * <li>Clarifications (except broadcasts)</li>
+ * <li>Clarifications (except broadcasts). <code>reply_to_id</code> is omitted when the
+ * referenced clarification is not visible to this account</li>
  * <li>Awards, except for first to solve awards before the freeze</li>
  * <li>Test_data</li>
  * <li>Runs</li>
@@ -62,6 +65,9 @@ public class PublicContest extends Contest implements IFilteredContest {
 
 	protected static List<IContestObject> resolved = new ArrayList<>();
 
+	// reply id -> original reply_to_id, for links removed until the target is visible
+	private final Map<String, String> strippedReplyTo = new HashMap<>();
+
 	public PublicContest() {
 		// do nothing
 	}
@@ -80,7 +86,7 @@ public class PublicContest extends Contest implements IFilteredContest {
 					releaseAtStart.remove(remove);
 				return;
 			}
-			super.add(obj);
+			addIt(obj);
 			return;
 		}
 
@@ -224,7 +230,7 @@ public class PublicContest extends Contest implements IFilteredContest {
 				// everyone sees broadcasts
 				if (clar.isBroadcast()) {
 					clar = filterClarification(clar);
-					super.add(clar);
+					addIt(clar);
 				}
 
 				return;
@@ -260,7 +266,17 @@ public class PublicContest extends Contest implements IFilteredContest {
 	 * @param obj
 	 */
 	protected void addIt(IContestObject obj) {
+		// Drop links before the target disappears so an event-feed client never
+		// observes a reply_to_id that does not resolve.
+		if (obj instanceof IDelete && obj.getType() == ContestType.CLARIFICATION) {
+			stripRepliesTo(obj.getId());
+			strippedReplyTo.remove(obj.getId());
+		}
+
 		super.add(obj);
+
+		if (!(obj instanceof IDelete) && obj.getType() == ContestType.CLARIFICATION)
+			revealRepliesTo(obj.getId());
 	}
 
 	/**
@@ -285,17 +301,70 @@ public class PublicContest extends Contest implements IFilteredContest {
 
 	/**
 	 * Helper method for subclasses to filter clarifications.
+	 * <p>
+	 * A reply keeps <code>reply_to_id</code> only when this account can already see that
+	 * clarification. Otherwise the id is removed (a private question answered by a broadcast, or
+	 * by a message sent to additional teams). The original id is remembered and restored if the
+	 * target later becomes visible, and cleared again if that target is deleted.
 	 */
 	protected IClarification filterClarification(IClarification clar) {
-		String rtId = clar.getReplyToId();
-		if (getClarificationById(rtId) == null) {
-			// strip reply_to_id if this account can't see it
-			// (e.g. in case a response to a team was broadcast to everyone)
-			Clarification c = (Clarification) ((Clarification) clar).clone();
+		// Copy before editing. Filtered contests are fed the source contest's instances, and an
+		// in-place edit of a shared instance would publish reply_to_id without filtering it.
+		Clarification c = (Clarification) ((Clarification) clar).clone();
+		String rtId = c.getReplyToId();
+		if (rtId != null && getClarificationById(rtId) == null) {
+			strippedReplyTo.put(c.getId(), rtId);
 			c.add("reply_to_id", null);
-			return c;
+		} else {
+			strippedReplyTo.remove(c.getId());
 		}
-		return clar;
+		return c;
+	}
+
+	/**
+	 * Put reply_to_id back on replies that were waiting for this clarification.
+	 */
+	private void revealRepliesTo(String id) {
+		if (id == null || strippedReplyTo.isEmpty() || getClarificationById(id) == null)
+			return;
+
+		List<String> replyIds = new ArrayList<>();
+		for (Map.Entry<String, String> e : strippedReplyTo.entrySet()) {
+			if (id.equals(e.getValue()))
+				replyIds.add(e.getKey());
+		}
+
+		for (String replyId : replyIds) {
+			strippedReplyTo.remove(replyId);
+			IClarification reply = getClarificationById(replyId);
+			if (reply == null)
+				continue;
+
+			Clarification copy = (Clarification) ((Clarification) reply).clone();
+			copy.add("reply_to_id", id);
+			addIt(copy);
+		}
+	}
+
+	/**
+	 * Remove reply_to_id from replies that point at a clarification that is going away.
+	 */
+	private void stripRepliesTo(String id) {
+		if (id == null)
+			return;
+
+		List<IClarification> replies = new ArrayList<>();
+		for (IClarification c : getClarifications()) {
+			if (id.equals(c.getReplyToId()))
+				replies.add(c);
+		}
+
+		for (IClarification c : replies) {
+			strippedReplyTo.put(c.getId(), id);
+			Clarification copy = (Clarification) ((Clarification) c).clone();
+			copy.add("reply_to_id", null);
+			addIt(copy);
+		}
 	}
 
 	/**
