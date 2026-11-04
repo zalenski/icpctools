@@ -25,11 +25,6 @@ public class PhotoPresentation extends Presentation {
 	private static final int SECONDS_PER_PHOTO = 12;
 	private static final int CACHE_SIZE = 2;
 
-	/**
-	 * Wait until the presentation size stops changing before reading photos again.
-	 */
-	static final long RESIZE_QUIET_MS = 200;
-
 	private String mode = null;
 
 	private volatile BufferedImage image;
@@ -38,8 +33,6 @@ public class PhotoPresentation extends Presentation {
 	private int num;
 	private String[] filenames;
 	private Presentation.Job job;
-	private int resizeGeneration;
-	private boolean resizeScheduled;
 
 	private Point2D.Float p1, p2;
 	private float s1, s2;
@@ -146,60 +139,15 @@ public class PhotoPresentation extends Presentation {
 		super.setSize(d);
 		if (d.width == oldWidth && d.height == oldHeight)
 			return;
-		if (current == null && cachedCount() == 0)
+		rescaleLoaded(width, height);
+		LoadedPhoto shown = current;
+		if (shown == null)
 			return;
-		scheduleResize();
-	}
-
-	/**
-	 * Coalesce a burst of resizes into one reload, on a worker thread. The current view stays on
-	 * screen until the new bitmap is ready.
-	 */
-	private void scheduleResize() {
-		synchronized (this) {
-			resizeGeneration++;
-			if (resizeScheduled)
-				return;
-			resizeScheduled = true;
+		BufferedImage view = shown.getView();
+		if (view != null && view != image) {
+			image = view;
+			setupImage();
 		}
-		execute(new Runnable() {
-			@Override
-			public void run() {
-				try {
-					int applied = -1;
-					while (true) {
-						int seen;
-						synchronized (PhotoPresentation.this) {
-							seen = resizeGeneration;
-						}
-						Thread.sleep(RESIZE_QUIET_MS);
-						int w;
-						int h;
-						synchronized (PhotoPresentation.this) {
-							if (resizeGeneration != seen)
-								continue;
-							w = width;
-							h = height;
-							resizeScheduled = false;
-						}
-						rescaleLoaded(w, h);
-						applied = seen;
-						synchronized (PhotoPresentation.this) {
-							if (resizeGeneration != applied) {
-								resizeScheduled = true;
-								continue;
-							}
-						}
-						break;
-					}
-				} catch (InterruptedException e) {
-					synchronized (PhotoPresentation.this) {
-						resizeScheduled = false;
-					}
-					Thread.currentThread().interrupt();
-				}
-			}
-		});
 	}
 
 	private void rescaleLoaded(int screenWidth, int screenHeight) {
@@ -250,14 +198,6 @@ public class PhotoPresentation extends Presentation {
 
 	@Override
 	public void paint(Graphics2D g) {
-		LoadedPhoto shown = current;
-		if (shown != null) {
-			BufferedImage view = shown.getView();
-			if (view != null && view != image) {
-				image = view;
-				setupImage();
-			}
-		}
 		if (image == null || p1 == null || p2 == null) {
 			paintHelp(g, HELP, "");
 			return;
