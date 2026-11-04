@@ -38,6 +38,21 @@ public class ImageScaler {
 	}
 
 	/**
+	 * Scales to an exact pixel size with the same high-quality downscale as {@link #scaleImage}.
+	 * Returns {@code img} when either target dimension is not smaller than the source, so the
+	 * result is never an enlargement.
+	 */
+	public static BufferedImage scaleDown(BufferedImage img, int targetWidth, int targetHeight) {
+		if (img == null)
+			return null;
+		if (targetWidth <= 0 || targetHeight <= 0)
+			return img;
+		if (targetWidth >= img.getWidth() || targetHeight >= img.getHeight())
+			return img;
+		return getScaledImage(img, targetWidth, targetHeight);
+	}
+
+	/**
 	 * Returns a scaled instance of the provided {@code BufferedImage}.
 	 *
 	 * @param img the original image
