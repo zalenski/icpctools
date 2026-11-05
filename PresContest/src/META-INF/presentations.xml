@@ -85,6 +85,7 @@
       name="Photos"
       category="ICPC"
       description="A rotating set of photos found in CDP/present/photos/."
+      properties="duration:12000,duration:8000,fade:1000,fade:0"
       image="images/presentations/photos.png"
       class="org.icpc.tools.presentation.contest.internal.presentations.PhotoPresentation"/>
    <presentation

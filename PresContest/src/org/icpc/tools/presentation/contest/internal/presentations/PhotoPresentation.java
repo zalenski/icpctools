@@ -1,5 +1,6 @@
 package org.icpc.tools.presentation.contest.internal.presentations;
 
+import java.awt.AlphaComposite;
 import java.awt.Dimension;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
@@ -18,9 +19,15 @@ public class PhotoPresentation extends Presentation {
 			"Place photos on the CDS in {icpc.cds.config}/present/photos." };
 
 	private static final int SECONDS_PER_PHOTO = 12;
+	private static final int FADE_MS = 1000;
+	private static final int PHOTO_MS = SECONDS_PER_PHOTO * 1000;
+	private static final int MIN_DURATION_MS = 10;
 	private static final int CACHE_SIZE = 2;
 
 	private String mode = null;
+	private int durationMs = PHOTO_MS;
+	private int requestedFadeMs = FADE_MS;
+	private int fadeMs = FADE_MS;
 
 	private BufferedImage image;
 	private final List<BufferedImage> images = new ArrayList<>(4);
@@ -30,6 +37,8 @@ public class PhotoPresentation extends Presentation {
 
 	private Point2D.Float p1, p2;
 	private float s1, s2;
+	private PhotoPan outgoing;
+	private boolean painted;
 
 	@Override
 	public void init() {
@@ -88,7 +97,7 @@ public class PhotoPresentation extends Presentation {
 
 		BufferedImage old = image;
 		image = images.remove(0);
-		if (old != null)
+		if (old != null && !retainOutgoing(old))
 			old.flush();
 
 		setupImage();
@@ -98,7 +107,7 @@ public class PhotoPresentation extends Presentation {
 
 	@Override
 	public long getRepeat() {
-		return SECONDS_PER_PHOTO * 1000L;
+		return durationMs;
 	}
 
 	protected void setupImage() {
@@ -137,31 +146,214 @@ public class PhotoPresentation extends Presentation {
 			return;
 		}
 
-		float dt = getRepeatTimeMs() / SECONDS_PER_PHOTO / 1000f;
-		if (dt > 1f)
-			dt = 1f;
+		long visible = getRepeatTimeMs();
+		int duration = durationMs;
+		int fade = fadeMs;
+		PhotoPan.draw(g, image, p1, p2, s1, s2, PhotoPan.motionDt(visible, duration, fade), mode, 1f);
+		painted = true;
 
-		double dx = p1.x * (1f - dt) + p2.x * dt;
-		double dy = p1.y * (1f - dt) + p2.y * dt;
-		double ds = s1 * (1f - dt) + s2 * dt;
+		if (outgoing == null)
+			return;
+		if (fade <= 0 || visible >= fade) {
+			outgoing.release();
+			outgoing = null;
+			return;
+		}
+		outgoing.draw(g, PhotoPan.motionDt(duration + visible, duration, fade), mode, PhotoPan.fadeAlpha(visible, fade));
+	}
 
-		Graphics2D gg = (Graphics2D) g.create();
-		gg.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-		if ("h".equals(mode))
-			gg.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
-		else if ("l".equals(mode))
-			gg.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
-		else
-			gg.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-		gg.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
-		gg.scale(ds, ds);
-		gg.translate(-dx, -dy);
-		gg.drawImage(image, 0, 0, null);
-		gg.dispose();
+	private boolean retainOutgoing(BufferedImage old) {
+		if (outgoing != null) {
+			outgoing.release();
+			outgoing = null;
+		}
+		if (fadeMs <= 0 || !painted || p1 == null || p2 == null)
+			return false;
+		outgoing = new PhotoPan(old, p1, p2, s1, s2);
+		return true;
+	}
+
+	/**
+	 * One photo's Ken Burns state. {@code dt} runs from 0 at the start of the fade-in to 1 at the
+	 * end of the fade-out. That span is the photo {@code duration} plus the effective fade.
+	 */
+	static final class PhotoPan {
+		final BufferedImage image;
+		final Point2D.Float p1;
+		final Point2D.Float p2;
+		final float s1;
+		final float s2;
+
+		PhotoPan(BufferedImage image, Point2D.Float p1, Point2D.Float p2, float s1, float s2) {
+			this.image = image;
+			this.p1 = p1;
+			this.p2 = p2;
+			this.s1 = s1;
+			this.s2 = s2;
+		}
+
+		void release() {
+			image.flush();
+		}
+
+		void draw(Graphics2D g, float dt, String mode) {
+			draw(g, dt, mode, 1f);
+		}
+
+		void draw(Graphics2D g, float dt, String mode, float alpha) {
+			draw(g, image, p1, p2, s1, s2, dt, mode, alpha);
+		}
+
+		static long motionSpanMs() {
+			return motionSpanMs(PHOTO_MS, FADE_MS);
+		}
+
+		static long motionSpanMs(int fadeMs) {
+			return motionSpanMs(PHOTO_MS, fadeMs);
+		}
+
+		static long motionSpanMs(int durationMs, int fadeMs) {
+			int fade = fadeMs < 0 ? 0 : fadeMs;
+			return (long) durationMs + fade;
+		}
+
+		static float motionDt(long visibleMs) {
+			return motionDt(visibleMs, PHOTO_MS, FADE_MS);
+		}
+
+		static float motionDt(long visibleMs, int fadeMs) {
+			return motionDt(visibleMs, PHOTO_MS, fadeMs);
+		}
+
+		static float motionDt(long visibleMs, int durationMs, int fadeMs) {
+			long span = motionSpanMs(durationMs, fadeMs);
+			if (span <= 0)
+				return 1f;
+			if (visibleMs <= 0)
+				return 0f;
+			if (visibleMs >= span)
+				return 1f;
+			return visibleMs / (float) span;
+		}
+
+		static float fadeAlpha(long elapsedMs) {
+			return fadeAlpha(elapsedMs, FADE_MS);
+		}
+
+		static float fadeAlpha(long elapsedMs, int fadeMs) {
+			int fade = clampFadeMs(fadeMs);
+			if (fade <= 0)
+				return 0f;
+			if (elapsedMs <= 0)
+				return 1f;
+			if (elapsedMs >= fade)
+				return 0f;
+			return 1f - elapsedMs / (float) fade;
+		}
+
+		static void draw(Graphics2D g, BufferedImage image, Point2D.Float p1, Point2D.Float p2, float s1, float s2,
+				float dt, String mode, float alpha) {
+			if (image == null || p1 == null || p2 == null || alpha <= 0f)
+				return;
+
+			double dx = p1.x * (1f - dt) + p2.x * dt;
+			double dy = p1.y * (1f - dt) + p2.y * dt;
+			double ds = s1 * (1f - dt) + s2 * dt;
+
+			Graphics2D gg = (Graphics2D) g.create();
+			gg.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+			if ("h".equals(mode))
+				gg.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+			else if ("l".equals(mode))
+				gg.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+			else
+				gg.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+			gg.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+			if (alpha < 1f)
+				gg.setComposite(AlphaComposite.SrcOver.derive(alpha));
+			gg.scale(ds, ds);
+			gg.translate(-dx, -dy);
+			gg.drawImage(image, 0, 0, null);
+			gg.dispose();
+		}
+	}
+
+	int durationMs() {
+		return durationMs;
+	}
+
+	int fadeMs() {
+		return fadeMs;
+	}
+
+	/**
+	 * Negative fades become a hard cut. Unparseable text leaves {@code current} unchanged. The
+	 * half-duration cap is applied separately so a later duration change can restore the request.
+	 */
+	static int parseFadeMs(String raw, int current) {
+		if (raw == null)
+			return current;
+		String text = raw.trim();
+		if (text.isEmpty())
+			return current;
+		try {
+			return clampFadeMs(Integer.parseInt(text));
+		} catch (NumberFormatException e) {
+			return current;
+		}
+	}
+
+	static int clampFadeMs(int requested) {
+		if (requested < 0)
+			return 0;
+		return requested;
+	}
+
+	static int parseDurationMs(String raw, int current) {
+		if (raw == null)
+			return current;
+		String text = raw.trim();
+		if (text.isEmpty())
+			return current;
+		try {
+			return clampDurationMs(Integer.parseInt(text));
+		} catch (NumberFormatException e) {
+			return current;
+		}
+	}
+
+	static int clampDurationMs(int requested) {
+		if (requested < MIN_DURATION_MS)
+			return MIN_DURATION_MS;
+		return requested;
+	}
+
+	/**
+	 * The fade-in at the start of a photo and the fade-out at the end must both fit in
+	 * {@code duration} without overlapping, so the fade cannot exceed half the duration.
+	 */
+	private void applyFadeLimit() {
+		int cap = durationMs / 2;
+		if (requestedFadeMs > cap) {
+			Trace.trace(Trace.WARNING, "Photo fade of " + requestedFadeMs + " ms clipped to " + cap
+					+ " ms (half of the " + durationMs + " ms duration)");
+			fadeMs = cap;
+		} else
+			fadeMs = requestedFadeMs;
 	}
 
 	@Override
 	public void setProperty(String value) {
+		if (value != null && value.startsWith("fade:")) {
+			requestedFadeMs = parseFadeMs(value.substring(5), requestedFadeMs);
+			applyFadeLimit();
+			return;
+		}
+		if (value != null && value.startsWith("duration:")) {
+			durationMs = parseDurationMs(value.substring("duration:".length()), durationMs);
+			applyFadeLimit();
+			return;
+		}
 		mode = value;
 	}
 }
