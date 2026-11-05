@@ -20,9 +20,11 @@ public class PhotoPresentation extends Presentation {
 
 	private static final int SECONDS_PER_PHOTO = 12;
 	private static final int FADE_MS = 1000;
+	private static final int PHOTO_MS = SECONDS_PER_PHOTO * 1000;
 	private static final int CACHE_SIZE = 2;
 
 	private String mode = null;
+	private int fadeMs = FADE_MS;
 
 	private BufferedImage image;
 	private final List<BufferedImage> images = new ArrayList<>(4);
@@ -142,17 +144,18 @@ public class PhotoPresentation extends Presentation {
 		}
 
 		long visible = getRepeatTimeMs();
-		PhotoPan.draw(g, image, p1, p2, s1, s2, PhotoPan.motionDt(visible), mode, 1f);
+		int fade = fadeMs;
+		PhotoPan.draw(g, image, p1, p2, s1, s2, PhotoPan.motionDt(visible, fade), mode, 1f);
 		painted = true;
 
 		if (outgoing == null)
 			return;
-		if (visible >= FADE_MS) {
+		if (fade <= 0 || visible >= fade) {
 			outgoing.release();
 			outgoing = null;
 			return;
 		}
-		outgoing.draw(g, PhotoPan.motionDt(SECONDS_PER_PHOTO * 1000L + visible), mode, PhotoPan.fadeAlpha(visible));
+		outgoing.draw(g, PhotoPan.motionDt(PHOTO_MS + visible, fade), mode, PhotoPan.fadeAlpha(visible, fade));
 	}
 
 	private boolean retainOutgoing(BufferedImage old) {
@@ -160,7 +163,7 @@ public class PhotoPresentation extends Presentation {
 			outgoing.release();
 			outgoing = null;
 		}
-		if (!painted || p1 == null || p2 == null)
+		if (fadeMs <= 0 || !painted || p1 == null || p2 == null)
 			return false;
 		outgoing = new PhotoPan(old, p1, p2, s1, s2);
 		return true;
@@ -168,7 +171,7 @@ public class PhotoPresentation extends Presentation {
 
 	/**
 	 * One photo's Ken Burns state. {@code dt} runs from 0 at the start of the fade-in to 1 at the
-	 * end of the fade-out, a span of {@code SECONDS_PER_PHOTO} plus {@code FADE_MS}.
+	 * end of the fade-out, a span of {@code SECONDS_PER_PHOTO} plus the configured fade.
 	 */
 	static final class PhotoPan {
 		final BufferedImage image;
@@ -198,11 +201,19 @@ public class PhotoPresentation extends Presentation {
 		}
 
 		static long motionSpanMs() {
-			return SECONDS_PER_PHOTO * 1000L + FADE_MS;
+			return motionSpanMs(FADE_MS);
+		}
+
+		static long motionSpanMs(int fadeMs) {
+			return PHOTO_MS + clampFadeMs(fadeMs);
 		}
 
 		static float motionDt(long visibleMs) {
-			long span = motionSpanMs();
+			return motionDt(visibleMs, FADE_MS);
+		}
+
+		static float motionDt(long visibleMs, int fadeMs) {
+			long span = motionSpanMs(fadeMs);
 			if (visibleMs <= 0)
 				return 0f;
 			if (visibleMs >= span)
@@ -211,11 +222,18 @@ public class PhotoPresentation extends Presentation {
 		}
 
 		static float fadeAlpha(long elapsedMs) {
+			return fadeAlpha(elapsedMs, FADE_MS);
+		}
+
+		static float fadeAlpha(long elapsedMs, int fadeMs) {
+			int fade = clampFadeMs(fadeMs);
+			if (fade <= 0)
+				return 0f;
 			if (elapsedMs <= 0)
 				return 1f;
-			if (elapsedMs >= FADE_MS)
+			if (elapsedMs >= fade)
 				return 0f;
-			return 1f - elapsedMs / (float) FADE_MS;
+			return 1f - elapsedMs / (float) fade;
 		}
 
 		static void draw(Graphics2D g, BufferedImage image, Point2D.Float p1, Point2D.Float p2, float s1, float s2,
@@ -245,8 +263,41 @@ public class PhotoPresentation extends Presentation {
 		}
 	}
 
+	int fadeMs() {
+		return fadeMs;
+	}
+
+	/**
+	 * Negative fades become a hard cut. Anything longer than one photo is capped at that
+	 * interval. Unparseable text leaves {@code current} unchanged.
+	 */
+	static int parseFadeMs(String raw, int current) {
+		if (raw == null)
+			return current;
+		String text = raw.trim();
+		if (text.isEmpty())
+			return current;
+		try {
+			return clampFadeMs(Integer.parseInt(text));
+		} catch (NumberFormatException e) {
+			return current;
+		}
+	}
+
+	static int clampFadeMs(int requested) {
+		if (requested < 0)
+			return 0;
+		if (requested > PHOTO_MS)
+			return PHOTO_MS;
+		return requested;
+	}
+
 	@Override
 	public void setProperty(String value) {
+		if (value != null && value.startsWith("fade:")) {
+			fadeMs = parseFadeMs(value.substring(5), fadeMs);
+			return;
+		}
 		mode = value;
 	}
 }

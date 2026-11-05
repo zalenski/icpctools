@@ -41,6 +41,41 @@ public class PhotoFadeTest {
 	}
 
 	@Test
+	public void customFadeFollowsTheProperty() {
+		PhotoPresentation photos = new PhotoPresentation();
+		photos.setProperty("fade:2500");
+		assertEquals(2500, photos.fadeMs());
+
+		long span = PhotoPresentation.PhotoPan.motionSpanMs(photos.fadeMs());
+		assertEquals(12_000L + 2500L, span);
+		assertEquals(1f, PhotoPresentation.PhotoPan.fadeAlpha(0, 2500), 0f);
+		assertEquals(0.5f, PhotoPresentation.PhotoPan.fadeAlpha(1250, 2500), 0.0001f);
+		assertEquals(0f, PhotoPresentation.PhotoPan.fadeAlpha(2500, 2500), 0f);
+		assertEquals(12_000f / span, PhotoPresentation.PhotoPan.motionDt(12_000L, 2500), 0.0001f);
+		assertEquals(1f, PhotoPresentation.PhotoPan.motionDt(span, 2500), 0f);
+
+		photos.setProperty("fade:nope");
+		assertEquals(2500, photos.fadeMs());
+		photos.setProperty("fade:-30");
+		assertEquals(0, photos.fadeMs());
+		photos.setProperty("fade:50000");
+		assertEquals(12_000, photos.fadeMs());
+		assertEquals(12_000L + 12_000L, PhotoPresentation.PhotoPan.motionSpanMs(photos.fadeMs()));
+	}
+
+	@Test
+	public void zeroFadeIsAHardCut() {
+		PhotoPresentation photos = new PhotoPresentation();
+		photos.setProperty("fade:0");
+		assertEquals(0, photos.fadeMs());
+		assertEquals(12_000L, PhotoPresentation.PhotoPan.motionSpanMs(0));
+		assertEquals(0f, PhotoPresentation.PhotoPan.motionDt(0, 0), 0f);
+		assertEquals(1f, PhotoPresentation.PhotoPan.motionDt(12_000L, 0), 0.0001f);
+		assertEquals(0f, PhotoPresentation.PhotoPan.fadeAlpha(0, 0), 0f);
+		assertEquals(0f, PhotoPresentation.PhotoPan.fadeAlpha(1, 0), 0f);
+	}
+
+	@Test
 	public void outgoingDrawFadesTowardTheImageUnderneath() {
 		BufferedImage photo = new BufferedImage(4, 4, BufferedImage.TYPE_INT_RGB);
 		Graphics2D pg = photo.createGraphics();
