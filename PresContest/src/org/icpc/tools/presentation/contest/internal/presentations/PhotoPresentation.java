@@ -21,7 +21,7 @@ public class PhotoPresentation extends Presentation {
 	private static final int SECONDS_PER_PHOTO = 12;
 	private static final int FADE_MS = 1000;
 	private static final int PHOTO_MS = SECONDS_PER_PHOTO * 1000;
-	private static final int MIN_DURATION_MS = 1000;
+	private static final int MIN_DURATION_MS = 10;
 	private static final int MAX_DURATION_MS = 60_000;
 	private static final int CACHE_SIZE = 2;
 

@@ -88,8 +88,11 @@ public class PhotoFadeTest {
 		photos.setProperty("duration:");
 		assertEquals(15_000, photos.durationMs());
 		photos.setProperty("duration:-5");
-		assertEquals(1000, photos.durationMs());
-		assertEquals(500, photos.fadeMs());
+		assertEquals(10, photos.durationMs());
+		assertEquals(5, photos.fadeMs());
+		photos.setProperty("duration:5");
+		assertEquals(10, photos.durationMs());
+		assertEquals(5, photos.fadeMs());
 		photos.setProperty("duration:999999");
 		assertEquals(60_000, photos.durationMs());
 		assertEquals(1000, photos.fadeMs());
