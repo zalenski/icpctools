@@ -21,9 +21,13 @@ public class PhotoPresentation extends Presentation {
 	private static final int SECONDS_PER_PHOTO = 12;
 	private static final int FADE_MS = 1000;
 	private static final int PHOTO_MS = SECONDS_PER_PHOTO * 1000;
+	private static final int MIN_DURATION_MS = 1000;
+	private static final int MAX_DURATION_MS = 60_000;
 	private static final int CACHE_SIZE = 2;
 
 	private String mode = null;
+	private int durationMs = PHOTO_MS;
+	private int requestedFadeMs = FADE_MS;
 	private int fadeMs = FADE_MS;
 
 	private BufferedImage image;
@@ -104,7 +108,7 @@ public class PhotoPresentation extends Presentation {
 
 	@Override
 	public long getRepeat() {
-		return SECONDS_PER_PHOTO * 1000L;
+		return durationMs;
 	}
 
 	protected void setupImage() {
@@ -144,8 +148,9 @@ public class PhotoPresentation extends Presentation {
 		}
 
 		long visible = getRepeatTimeMs();
+		int duration = durationMs;
 		int fade = fadeMs;
-		PhotoPan.draw(g, image, p1, p2, s1, s2, PhotoPan.motionDt(visible, fade), mode, 1f);
+		PhotoPan.draw(g, image, p1, p2, s1, s2, PhotoPan.motionDt(visible, duration, fade), mode, 1f);
 		painted = true;
 
 		if (outgoing == null)
@@ -155,7 +160,7 @@ public class PhotoPresentation extends Presentation {
 			outgoing = null;
 			return;
 		}
-		outgoing.draw(g, PhotoPan.motionDt(PHOTO_MS + visible, fade), mode, PhotoPan.fadeAlpha(visible, fade));
+		outgoing.draw(g, PhotoPan.motionDt(duration + visible, duration, fade), mode, PhotoPan.fadeAlpha(visible, fade));
 	}
 
 	private boolean retainOutgoing(BufferedImage old) {
@@ -171,7 +176,7 @@ public class PhotoPresentation extends Presentation {
 
 	/**
 	 * One photo's Ken Burns state. {@code dt} runs from 0 at the start of the fade-in to 1 at the
-	 * end of the fade-out, a span of {@code SECONDS_PER_PHOTO} plus the configured fade.
+	 * end of the fade-out. That span is the photo {@code duration} plus the effective fade.
 	 */
 	static final class PhotoPan {
 		final BufferedImage image;
@@ -201,19 +206,30 @@ public class PhotoPresentation extends Presentation {
 		}
 
 		static long motionSpanMs() {
-			return motionSpanMs(FADE_MS);
+			return motionSpanMs(PHOTO_MS, FADE_MS);
 		}
 
 		static long motionSpanMs(int fadeMs) {
-			return PHOTO_MS + clampFadeMs(fadeMs);
+			return motionSpanMs(PHOTO_MS, fadeMs);
+		}
+
+		static long motionSpanMs(int durationMs, int fadeMs) {
+			int fade = fadeMs < 0 ? 0 : fadeMs;
+			return (long) durationMs + fade;
 		}
 
 		static float motionDt(long visibleMs) {
-			return motionDt(visibleMs, FADE_MS);
+			return motionDt(visibleMs, PHOTO_MS, FADE_MS);
 		}
 
 		static float motionDt(long visibleMs, int fadeMs) {
-			long span = motionSpanMs(fadeMs);
+			return motionDt(visibleMs, PHOTO_MS, fadeMs);
+		}
+
+		static float motionDt(long visibleMs, int durationMs, int fadeMs) {
+			long span = motionSpanMs(durationMs, fadeMs);
+			if (span <= 0)
+				return 1f;
 			if (visibleMs <= 0)
 				return 0f;
 			if (visibleMs >= span)
@@ -263,13 +279,17 @@ public class PhotoPresentation extends Presentation {
 		}
 	}
 
+	int durationMs() {
+		return durationMs;
+	}
+
 	int fadeMs() {
 		return fadeMs;
 	}
 
 	/**
-	 * Negative fades become a hard cut. Anything longer than one photo is capped at that
-	 * interval. Unparseable text leaves {@code current} unchanged.
+	 * Negative fades become a hard cut. Unparseable text leaves {@code current} unchanged. The
+	 * half-duration cap is applied separately so a later duration change can restore the request.
 	 */
 	static int parseFadeMs(String raw, int current) {
 		if (raw == null)
@@ -287,15 +307,54 @@ public class PhotoPresentation extends Presentation {
 	static int clampFadeMs(int requested) {
 		if (requested < 0)
 			return 0;
-		if (requested > PHOTO_MS)
-			return PHOTO_MS;
 		return requested;
+	}
+
+	static int parseDurationMs(String raw, int current) {
+		if (raw == null)
+			return current;
+		String text = raw.trim();
+		if (text.isEmpty())
+			return current;
+		try {
+			return clampDurationMs(Integer.parseInt(text));
+		} catch (NumberFormatException e) {
+			return current;
+		}
+	}
+
+	static int clampDurationMs(int requested) {
+		if (requested < MIN_DURATION_MS)
+			return MIN_DURATION_MS;
+		if (requested > MAX_DURATION_MS)
+			return MAX_DURATION_MS;
+		return requested;
+	}
+
+	/**
+	 * The fade-in at the start of a photo and the fade-out at the end must both fit in
+	 * {@code duration} without overlapping, so the fade cannot exceed half the duration.
+	 */
+	private void applyFadeLimit() {
+		int cap = durationMs / 2;
+		if (requestedFadeMs > cap) {
+			Trace.trace(Trace.WARNING, "Photo fade of " + requestedFadeMs + " ms clipped to " + cap
+					+ " ms (half of the " + durationMs + " ms duration)");
+			fadeMs = cap;
+		} else
+			fadeMs = requestedFadeMs;
 	}
 
 	@Override
 	public void setProperty(String value) {
 		if (value != null && value.startsWith("fade:")) {
-			fadeMs = parseFadeMs(value.substring(5), fadeMs);
+			requestedFadeMs = parseFadeMs(value.substring(5), requestedFadeMs);
+			applyFadeLimit();
+			return;
+		}
+		if (value != null && value.startsWith("duration:")) {
+			durationMs = parseDurationMs(value.substring("duration:".length()), durationMs);
+			applyFadeLimit();
 			return;
 		}
 		mode = value;

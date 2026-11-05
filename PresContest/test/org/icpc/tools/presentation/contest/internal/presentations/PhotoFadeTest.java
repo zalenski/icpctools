@@ -4,12 +4,15 @@ import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.geom.Point2D;
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 @RunWith(JUnit4.class)
@@ -59,8 +62,71 @@ public class PhotoFadeTest {
 		photos.setProperty("fade:-30");
 		assertEquals(0, photos.fadeMs());
 		photos.setProperty("fade:50000");
-		assertEquals(12_000, photos.fadeMs());
-		assertEquals(12_000L + 12_000L, PhotoPresentation.PhotoPan.motionSpanMs(photos.fadeMs()));
+		assertEquals(6_000, photos.fadeMs());
+		assertEquals(12_000L + 6_000L, PhotoPresentation.PhotoPan.motionSpanMs(photos.fadeMs()));
+	}
+
+	@Test
+	public void defaultDurationIsTwelveSeconds() {
+		PhotoPresentation photos = new PhotoPresentation();
+		assertEquals(12_000, photos.durationMs());
+		assertEquals(1000, photos.fadeMs());
+		assertEquals(12_000L, photos.getRepeat());
+		assertEquals(12_000L + 1000L, PhotoPresentation.PhotoPan.motionSpanMs(photos.durationMs(), photos.fadeMs()));
+	}
+
+	@Test
+	public void parsesDurationAndIgnoresInvalidValues() {
+		PhotoPresentation photos = new PhotoPresentation();
+		photos.setProperty("duration:15000");
+		assertEquals(15_000, photos.durationMs());
+		assertEquals(15_000L, photos.getRepeat());
+		assertEquals(1000, photos.fadeMs());
+
+		photos.setProperty("duration:nope");
+		assertEquals(15_000, photos.durationMs());
+		photos.setProperty("duration:");
+		assertEquals(15_000, photos.durationMs());
+		photos.setProperty("duration:-5");
+		assertEquals(1000, photos.durationMs());
+		assertEquals(500, photos.fadeMs());
+		photos.setProperty("duration:999999");
+		assertEquals(60_000, photos.durationMs());
+		assertEquals(1000, photos.fadeMs());
+	}
+
+	@Test
+	public void fadeIsClippedToHalfTheDuration() {
+		PrintStream original = System.out;
+		ByteArrayOutputStream captured = new ByteArrayOutputStream();
+		System.setOut(new PrintStream(captured, true));
+		try {
+			PhotoPresentation photos = new PhotoPresentation();
+			photos.setProperty("duration:8000");
+			photos.setProperty("fade:4000");
+			assertEquals(8000, photos.durationMs());
+			assertEquals(4000, photos.fadeMs());
+			assertFalse(captured.toString().contains("clipped"));
+
+			photos.setProperty("fade:5000");
+			assertEquals(4000, photos.fadeMs());
+			String log = captured.toString();
+			assertTrue(log.contains("clipped"));
+			assertTrue(log.contains("4000"));
+
+			long span = PhotoPresentation.PhotoPan.motionSpanMs(photos.durationMs(), photos.fadeMs());
+			assertEquals(8000L + 4000L, span);
+			assertEquals(8000f / span, PhotoPresentation.PhotoPan.motionDt(8000L, 8000, 4000), 0.0001f);
+			assertEquals(1f, PhotoPresentation.PhotoPan.motionDt(span, 8000, 4000), 0f);
+
+			photos.setProperty("duration:20000");
+			assertEquals(5000, photos.fadeMs());
+			photos.setProperty("h");
+			assertEquals(20_000, photos.durationMs());
+			assertEquals(5000, photos.fadeMs());
+		} finally {
+			System.setOut(original);
+		}
 	}
 
 	@Test
@@ -73,6 +139,12 @@ public class PhotoFadeTest {
 		assertEquals(1f, PhotoPresentation.PhotoPan.motionDt(12_000L, 0), 0.0001f);
 		assertEquals(0f, PhotoPresentation.PhotoPan.fadeAlpha(0, 0), 0f);
 		assertEquals(0f, PhotoPresentation.PhotoPan.fadeAlpha(1, 0), 0f);
+
+		photos.setProperty("duration:8000");
+		photos.setProperty("fade:0");
+		assertEquals(0, photos.fadeMs());
+		assertEquals(8000L, photos.getRepeat());
+		assertEquals(8000L, PhotoPresentation.PhotoPan.motionSpanMs(photos.durationMs(), photos.fadeMs()));
 	}
 
 	@Test
