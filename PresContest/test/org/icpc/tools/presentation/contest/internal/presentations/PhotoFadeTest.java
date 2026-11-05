@@ -94,7 +94,8 @@ public class PhotoFadeTest {
 		assertEquals(10, photos.durationMs());
 		assertEquals(5, photos.fadeMs());
 		photos.setProperty("duration:999999");
-		assertEquals(60_000, photos.durationMs());
+		assertEquals(999_999, photos.durationMs());
+		assertEquals(999_999L, photos.getRepeat());
 		assertEquals(1000, photos.fadeMs());
 	}
 

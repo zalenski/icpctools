@@ -22,7 +22,6 @@ public class PhotoPresentation extends Presentation {
 	private static final int FADE_MS = 1000;
 	private static final int PHOTO_MS = SECONDS_PER_PHOTO * 1000;
 	private static final int MIN_DURATION_MS = 10;
-	private static final int MAX_DURATION_MS = 60_000;
 	private static final int CACHE_SIZE = 2;
 
 	private String mode = null;
@@ -326,8 +325,6 @@ public class PhotoPresentation extends Presentation {
 	static int clampDurationMs(int requested) {
 		if (requested < MIN_DURATION_MS)
 			return MIN_DURATION_MS;
-		if (requested > MAX_DURATION_MS)
-			return MAX_DURATION_MS;
 		return requested;
 	}
 
