@@ -4,7 +4,11 @@ on:
     branches:
       - main
     paths:
+      # server package --include=minify reads build/cds/server.xml. The other
+      # files under build/cds are CDS container sources; add a path when this
+      # image gains another input it actually uses.
       - build/builder.Dockerfile
+      - build/cds/server.xml
 jobs:
   push-builder-docker:
     runs-on: ubuntu-26.04
