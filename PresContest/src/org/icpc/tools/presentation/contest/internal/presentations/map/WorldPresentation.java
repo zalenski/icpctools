@@ -63,9 +63,12 @@ public class WorldPresentation extends AbstractICPCPresentation {
 				IOrganization org = contest.getOrganizationById(t.getOrganizationId());
 				String[] groupIds = t.getGroupIds();
 				if (org != null && GroupPresentation.belongsToGroup(groupIds, groupId)) {
-					if (organizationGroups.containsKey(org.getId())) {
-						Trace.trace(Trace.INFO, org.getName() + " belongs to " + org.getName() + " and "
-								+ contest.getOrganizationById(organizationGroups.get(org.getId())).getName());
+					String previousGroupId = organizationGroups.get(org.getId());
+					if (previousGroupId != null && !previousGroupId.equals(groupId)) {
+						IGroup previousGroup = contest.getGroupById(previousGroupId);
+						Trace.trace(Trace.INFO, org.getName() + " belongs to "
+								+ (previousGroup != null ? previousGroup.getName() : previousGroupId) + " and "
+								+ group.getName());
 					}
 					organizationGroups.put(org.getId(), groupId);
 					memberCount++;
