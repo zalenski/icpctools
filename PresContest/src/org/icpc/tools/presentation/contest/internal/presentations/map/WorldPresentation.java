@@ -13,6 +13,7 @@ import org.icpc.tools.contest.model.IContest;
 import org.icpc.tools.contest.model.IGroup;
 import org.icpc.tools.contest.model.IOrganization;
 import org.icpc.tools.contest.model.ITeam;
+import org.icpc.tools.contest.model.internal.Group;
 import org.icpc.tools.presentation.contest.internal.AbstractICPCPresentation;
 
 public class WorldPresentation extends AbstractICPCPresentation {
@@ -62,9 +63,12 @@ public class WorldPresentation extends AbstractICPCPresentation {
 				IOrganization org = contest.getOrganizationById(t.getOrganizationId());
 				String[] groupIds = t.getGroupIds();
 				if (org != null && GroupPresentation.belongsToGroup(groupIds, groupId)) {
-					if (organizationGroups.containsKey(org.getId())) {
-						Trace.trace(Trace.INFO, org.getName() + " belongs to " + org.getName() + " and "
-								+ contest.getOrganizationById(organizationGroups.get(org.getId())).getName());
+					String previousGroupId = organizationGroups.get(org.getId());
+					if (previousGroupId != null && !previousGroupId.equals(groupId)) {
+						IGroup previousGroup = contest.getGroupById(previousGroupId);
+						Trace.trace(Trace.INFO, org.getName() + " belongs to "
+								+ (previousGroup != null ? previousGroup.getName() : previousGroupId) + " and "
+								+ group.getName());
 					}
 					organizationGroups.put(org.getId(), groupId);
 					memberCount++;
@@ -107,7 +111,11 @@ public class WorldPresentation extends AbstractICPCPresentation {
 		for (IOrganization org : orgs) {
 			double lat = org.getLatitude();
 			double lon = org.getLongitude();
-			Color groupColor = groupColors.get(organizationGroups.get(org.getId()));
+			String group = organizationGroups.get(org.getId());
+			if (group == null) {
+				continue;
+			}
+			Color groupColor = groupColors.get(group);
 			g.setColor(groupColor);
 			if (!Double.isNaN(lat) && !Double.isNaN(lon)) {
 				int x = (int) (width * (lon + 180.0) / 360.0);
