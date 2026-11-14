@@ -7,6 +7,7 @@
       <module fileurl="file://$PROJECT_DIR$/CoachView/CoachView.iml" filepath="$PROJECT_DIR$/CoachView/CoachView.iml" />
       <module fileurl="file://$PROJECT_DIR$/ContestModel/ContestModel.iml" filepath="$PROJECT_DIR$/ContestModel/ContestModel.iml" />
       <module fileurl="file://$PROJECT_DIR$/ContestUtil/ContestUtil.iml" filepath="$PROJECT_DIR$/ContestUtil/ContestUtil.iml" />
+      <module fileurl="file://$PROJECT_DIR$/PhotoImporter/PhotoImporter.iml" filepath="$PROJECT_DIR$/PhotoImporter/PhotoImporter.iml" />
       <module fileurl="file://$PROJECT_DIR$/PresAdmin/PresAdmin.iml" filepath="$PROJECT_DIR$/PresAdmin/PresAdmin.iml" />
       <module fileurl="file://$PROJECT_DIR$/PresContest/PresContest.iml" filepath="$PROJECT_DIR$/PresContest/PresContest.iml" />
       <module fileurl="file://$PROJECT_DIR$/PresCore/PresCore.iml" filepath="$PROJECT_DIR$/PresCore/PresCore.iml" />
