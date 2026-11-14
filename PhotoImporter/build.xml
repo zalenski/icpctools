@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project basedir="." default="jar" name="org.icpc.tools.photoimporter">
+  <property name="contest.model" value="../ContestModel"/>
+  <import file="${contest.model}/common.xml"/>
+  <property name="title" value="ICPC Photo Importer"/>
+  <property name="jar.name" value="photoImporter"/>
+  <target name="stage">
+    <copy todir="staging">
+      <fileset dir="${contest.model}/staging" includes="contestModel.jar"/>
+      <fileset dir="${contest.model}/lib" includes="*.jar"/>
+    </copy>
+  </target>
+</project>
