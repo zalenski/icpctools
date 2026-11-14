@@ -10,6 +10,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.regex.Pattern;
 
@@ -216,7 +217,7 @@ public class PhotoPresentation extends Presentation {
 					filename = filenames[num];
 				}
 			}
-			if (cached == null && (!isSafeFileName(filename))) {
+			if (cached == null && (!isSafeFileName(filename) || isPhotoSupportFile(filename))) {
 				misses++;
 				continue;
 			}
@@ -899,4 +900,8 @@ public class PhotoPresentation extends Presentation {
 		}
 	}
 
+	private static boolean isPhotoSupportFile(String name) {
+		String lower = name.toLowerCase(Locale.ROOT);
+		return lower.endsWith(".json") || lower.endsWith(".tmp");
+	}
 }
