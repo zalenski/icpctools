@@ -5,6 +5,7 @@ import java.util.concurrent.ThreadFactory;
 
 import org.icpc.tools.cds.CDSConfig;
 import org.icpc.tools.cds.ConfiguredContest;
+import org.icpc.tools.cds.photos.PhotoSyncService;
 import org.icpc.tools.cds.video.ReactionVideoRecorder;
 import org.icpc.tools.cds.video.VideoAggregator;
 import org.icpc.tools.contest.Trace;
@@ -36,6 +37,7 @@ public class ExecutorListener implements ServletContextListener {
 		servletContextEvent.getServletContext().setAttribute("executor", executor);
 
 		ReactionVideoRecorder.getInstance().start(executor);
+		PhotoSyncService.start(executor);
 	}
 
 	@Override

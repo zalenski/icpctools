@@ -18,6 +18,7 @@ import javax.naming.InitialContext;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 
+import org.icpc.tools.cds.photos.PhotoSources;
 import org.icpc.tools.cds.service.ExecutorListener;
 import org.icpc.tools.cds.video.VideoAggregator;
 import org.icpc.tools.cds.video.VideoAggregator.ConnectionMode;
@@ -323,6 +324,23 @@ public class CDSConfig {
 			}
 		} else
 			auths = new Auth[0];
+
+		loadPhotoSources(e);
+	}
+
+	private static void loadPhotoSources(Element e) {
+		Element[] photoElements = getChildren(e, "photos");
+		PhotoSources.Settings settings = PhotoSources.Settings.NONE;
+		if (photoElements != null && photoElements.length > 0) {
+			if (photoElements.length > 1) {
+				Trace.trace(Trace.WARNING, "Multiple <photos> elements in cdsConfig.xml; using the first");
+			}
+			settings = PhotoSources.parse(photoElements[0]);
+		}
+		PhotoSources.getInstance().reloadFromConfig(settings);
+		if (!settings.getSources().isEmpty()) {
+			Trace.trace(Trace.USER, "Configured photo sources: " + settings.getSources().size());
+		}
 	}
 
 	private void loadAccounts(File f) throws IOException {
