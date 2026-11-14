@@ -8,6 +8,7 @@ import java.awt.geom.Point2D;
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.regex.Pattern;
 
@@ -184,7 +185,7 @@ public class PhotoPresentation extends Presentation {
 				filename = filenames[num];
 			}
 
-			if (!isSafeFileName(filename)) {
+			if (!isSafeFileName(filename) || isPhotoSupportFile(filename)) {
 				misses++;
 				continue;
 			}
@@ -633,5 +634,9 @@ public class PhotoPresentation extends Presentation {
 			}
 			return images.contains(candidate);
 		}
+	}
+	private static boolean isPhotoSupportFile(String name) {
+		String lower = name.toLowerCase(Locale.ROOT);
+		return lower.endsWith(".json") || lower.endsWith(".tmp");
 	}
 }
