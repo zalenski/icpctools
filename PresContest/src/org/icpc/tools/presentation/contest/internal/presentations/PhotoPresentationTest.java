@@ -327,6 +327,42 @@ public class PhotoPresentationTest {
 	}
 
 	@Test
+	public void decodingDecidesWhichFilesArePhotosExceptKnownSupportFiles() throws Exception {
+		ScriptedLoader loader = new ScriptedLoader();
+		BufferedImage extensionless = loader.add("/presentation/photos", "team", 0xFF0000);
+		BufferedImage otherSuffix = loader.add("/presentation/photos", "team.other", 0x0000FF);
+		loader.names.put("/presentation/photos", new String[] { "photos-index.JSON", "photometa-1.TMP",
+				"unreadable.bin", "team", "team.other" });
+		PhotoPresentation presentation = new PhotoPresentation();
+		presentation.setPhotoLoader(loader);
+		presentation.init();
+
+		waitUntil("photos with arbitrary names", () -> presentation.isShowing(extensionless)
+				&& presentation.getCachedImageCount() > 0 && !presentation.isLoading());
+		assertTrue(loader.attempted.contains("/presentation/photos/team.other"));
+		assertTrue(loader.attempted.contains("/presentation/photos/unreadable.bin"));
+		assertFalse(loader.attempted.contains("/presentation/photos/photos-index.JSON"));
+		assertFalse(loader.attempted.contains("/presentation/photos/photometa-1.TMP"));
+		presentation.aboutToShow();
+		assertTrue(presentation.isShowing(otherSuffix));
+		presentation.dispose();
+	}
+
+	@Test
+	public void unreadableFilesDoNotKeepTheLoaderRunning() throws Exception {
+		ScriptedLoader loader = new ScriptedLoader();
+		loader.names.put("/presentation/photos", new String[] { "notes.txt", "broken.image", "photos-index.json" });
+		PhotoPresentation presentation = new PhotoPresentation();
+		presentation.setPhotoLoader(loader);
+		presentation.init();
+
+		waitUntil("unreadable listing exhausted", () -> !presentation.isLoading());
+		assertEquals(2, loader.attempted.size());
+		assertEquals(0, presentation.getCachedImageCount());
+		presentation.dispose();
+	}
+
+	@Test
 	public void catalogListingIsReservedBeforeARepeatCanStartAnotherLoad() throws Exception {
 		ScriptedLoader loader = new ScriptedLoader();
 		BufferedImage first = loader.add("/presentation/photos", "a.png", 0xFF0000);
@@ -482,6 +518,7 @@ public class PhotoPresentationTest {
 		final Map<String, BufferedImage> images = new HashMap<>();
 		final List<String> listed = new ArrayList<>();
 		final List<Opened> opened = new ArrayList<>();
+		final List<String> attempted = java.util.Collections.synchronizedList(new ArrayList<>());
 		volatile String blockOpenPrefix;
 		volatile String blockListDirectory;
 		final CountDownLatch openEntered = new CountDownLatch(1);
@@ -521,6 +558,7 @@ public class PhotoPresentationTest {
 
 		@Override
 		public BufferedImage open(String path) throws Exception {
+			attempted.add(path);
 			BufferedImage image = images.get(path);
 			if (image == null) {
 				throw new IllegalStateException("no image for " + path);
