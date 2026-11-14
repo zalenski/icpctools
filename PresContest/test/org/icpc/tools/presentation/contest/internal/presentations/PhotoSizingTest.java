@@ -69,6 +69,52 @@ public class PhotoSizingTest {
 	}
 
 	@Test
+	public void samePixelSizeReusesTheViewAndOnlyTheLatestSizeIsKept() throws Exception {
+		File file = Files.createTempFile("photo-size-reuse", ".png").toFile();
+		try {
+			writePng(file, 400, 300);
+			PhotoPresentation.LoadedPhoto photo = PhotoPresentation.LoadedPhoto.load(file, 100, 100);
+			BufferedImage first = photo.getView();
+			// These viewports need the same scaled pixel dimensions.
+			assertEquals(PhotoPresentation.scaledSize(400, 300, 100, 100),
+					PhotoPresentation.scaledSize(400, 300, 101, 100));
+			assertTrue(photo.reload(101, 100));
+			assertSame(first, photo.getView());
+			assertTrue(photo.reload(200, 150));
+			BufferedImage second = photo.getView();
+			assertNotSame(first, second);
+			assertTrue(photo.reload(100, 100));
+			assertNotSame(first, photo.getView());
+			assertNotSame(second, photo.getView());
+			assertEquals(first.getWidth(), photo.getView().getWidth());
+			assertEquals(first.getHeight(), photo.getView().getHeight());
+		} finally {
+			file.delete();
+		}
+	}
+
+	@Test
+	public void failedResizeKeepsTheOldViewAndCanRetry() throws Exception {
+		File file = Files.createTempFile("photo-resize-retry", ".png").toFile();
+		try {
+			writePng(file, 400, 300);
+			PhotoPresentation.LoadedPhoto photo = PhotoPresentation.LoadedPhoto.load(file, 100, 100);
+			BufferedImage first = photo.getView();
+			Files.write(file.toPath(), new byte[] { 1, 2, 3 });
+			assertTrue(photo.reload(200, 150));
+			assertSame(first, photo.getView());
+			writePng(file, 400, 300);
+			assertTrue(photo.reload(200, 150));
+			assertNotSame(first, photo.getView());
+			Dimension expected = PhotoPresentation.scaledSize(400, 300, 200, 150);
+			assertEquals(expected.width, photo.getView().getWidth());
+			assertEquals(expected.height, photo.getView().getHeight());
+		} finally {
+			file.delete();
+		}
+	}
+
+	@Test
 	public void doesNotReadUntilTheScreenSizeIsKnown() throws Exception {
 		File file = Files.createTempFile("photo-defer", ".png").toFile();
 		try {
