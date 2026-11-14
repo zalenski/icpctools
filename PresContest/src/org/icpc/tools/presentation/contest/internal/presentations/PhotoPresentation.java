@@ -6,14 +6,19 @@ import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.geom.Point2D;
 import java.awt.image.BufferedImage;
+import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.regex.Pattern;
 
+import javax.imageio.ImageIO;
+
 import org.icpc.tools.contest.Trace;
 import org.icpc.tools.contest.model.feed.ContestSource;
 import org.icpc.tools.presentation.contest.internal.ImageHelper;
+import org.icpc.tools.presentation.contest.internal.ImageScaler;
 import org.icpc.tools.presentation.core.Presentation;
 
 public class PhotoPresentation extends Presentation {
@@ -47,6 +52,14 @@ public class PhotoPresentation extends Presentation {
 		String[] list(String directory) throws Exception;
 
 		BufferedImage open(String path) throws Exception;
+
+		default LoadedPhoto load(String path, int width, int height) throws Exception {
+			return LoadedPhoto.fromImage(open(path));
+		}
+
+		default LoadedPhoto resize(LoadedPhoto photo, int width, int height) throws IOException {
+			return photo.resized(width, height);
+		}
 	}
 
 	private volatile String mode = null;
@@ -66,6 +79,15 @@ public class PhotoPresentation extends Presentation {
 		public BufferedImage open(String path) throws Exception {
 			return ImageHelper.loadImage(path);
 		}
+
+		@Override
+		public LoadedPhoto load(String path, int width, int height) throws Exception {
+			File file = ContestSource.getInstance().getFile(path);
+			if (file == null) {
+				throw new IOException("No image found");
+			}
+			return LoadedPhoto.load(file, width, height);
+		}
 	};
 
 	private volatile int durationMs = SECONDS_PER_PHOTO * 1000;
@@ -75,12 +97,13 @@ public class PhotoPresentation extends Presentation {
 	private BufferedImage blend;
 	private boolean hasPainted;
 	private boolean switchedBeforeRepeat;
-	private final List<BufferedImage> images = new ArrayList<>(4);
+	private final List<LoadedPhoto> images = new ArrayList<>(4);
 	private int num;
 	private String[] filenames;
 	private int generation;
 	private int loadingGeneration = -1;
 	private int discardedImages;
+	private boolean loadAgain;
 
 
 	@Override
@@ -123,6 +146,7 @@ public class PhotoPresentation extends Presentation {
 				return;
 			}
 			loadingGeneration = gen;
+			loadAgain = false;
 		}
 
 		execute(new Runnable() {
@@ -137,6 +161,9 @@ public class PhotoPresentation extends Presentation {
 					synchronized (images) {
 						if (loadingGeneration == gen) {
 							loadingGeneration = -1;
+							if (loadAgain) {
+								runLoad(gen, directory, false);
+							}
 						}
 					}
 				}
@@ -162,57 +189,75 @@ public class PhotoPresentation extends Presentation {
 
 	private void fillCache(int gen, String directory) {
 		int misses = 0;
+		List<LoadedPhoto> failed = new ArrayList<>();
 		while (true) {
-			String filename;
+			LoadedPhoto cached = null;
+			String filename = null;
+			int loadWidth;
+			int loadHeight;
 			synchronized (images) {
 				if (!active || gen != generation) {
 					return;
 				}
-				if (images.size() >= CACHE_SIZE) {
-					return;
+				loadWidth = width;
+				loadHeight = height;
+				for (LoadedPhoto photo : images) {
+					if (!failed.contains(photo) && !photo.fits(loadWidth, loadHeight)) {
+						cached = photo;
+						break;
+					}
 				}
-				if (filenames == null || filenames.length == 0) {
-					return;
+				if (cached == null) {
+					if (images.size() >= CACHE_SIZE || filenames == null || filenames.length == 0
+							|| misses >= filenames.length) {
+						return;
+					}
+					num = (num + 1) % filenames.length;
+					filename = filenames[num];
 				}
-				if (misses >= filenames.length) {
-					return;
-				}
-				num++;
-				if (num >= filenames.length || num < 0) {
-					num = 0;
-				}
-				filename = filenames[num];
 			}
-
-			if (!isSafeFileName(filename)) {
+			if (cached == null && (!isSafeFileName(filename))) {
 				misses++;
 				continue;
 			}
-
-			String path = directory + "/" + filename;
-			BufferedImage img = null;
+			LoadedPhoto loaded = null;
 			try {
-				img = loader.open(path);
+				loaded = cached == null ? loader.load(directory + "/" + filename, loadWidth, loadHeight)
+						: loader.resize(cached, loadWidth, loadHeight);
 			} catch (Exception e) {
-				Trace.trace(Trace.ERROR, "Could not load image " + filename + ": " + e.getMessage());
+				Trace.trace(Trace.ERROR, "Could not load photo: " + e.getMessage());
 			}
-
 			synchronized (images) {
 				if (!active || gen != generation) {
-					if (img != null) {
-						img.flush();
+					if (loaded != null && loaded != cached) {
+						loaded.dispose();
 						discardedImages++;
 					}
 					return;
 				}
-				if (img == null) {
+				if (loaded == null) {
 					misses++;
-					continue;
-				}
-				misses = 0;
-				images.add(img);
-				if (current == null) {
-					switchToNextImageLocked();
+					if (cached != null) {
+						failed.add(cached);
+					}
+				} else if (cached != null) {
+					int index = images.indexOf(cached);
+					if (loaded != cached) {
+						if (index >= 0) {
+							images.set(index, loaded);
+							cached.dispose();
+						} else {
+							// It started showing while we read the replacement. Leave it alone.
+							loaded.dispose();
+						}
+					}
+				} else {
+					misses = 0;
+					// Old-size results are usable; the next iteration updates queued photos if needed.
+					images.add(loaded);
+					if (current == null) {
+						switchToNextImageLocked();
+					}
 				}
 			}
 		}
@@ -265,9 +310,9 @@ public class PhotoPresentation extends Presentation {
 		}
 		hasPainted = false;
 		switchedBeforeRepeat = false;
-		for (BufferedImage cached : images) {
+		for (LoadedPhoto cached : images) {
 			if (cached != null) {
-				cached.flush();
+				cached.dispose();
 			}
 		}
 		images.clear();
@@ -278,7 +323,15 @@ public class PhotoPresentation extends Presentation {
 		return durationMs;
 	}
 
-	private PhotoPan createPan(BufferedImage image) {
+	private PhotoPan createPan(LoadedPhoto photo) {
+		return createPan(photo, null);
+	}
+
+	private PhotoPan createPan(LoadedPhoto photo, PhotoPan previous) {
+		BufferedImage image = photo.getView();
+		if (image == null) {
+			return new PhotoPan(photo, new Point2D.Float(), new Point2D.Float(), 1f, 1f);
+		}
 		Dimension sd = getSize();
 		Dimension id = new Dimension(image.getWidth(), image.getHeight());
 
@@ -290,7 +343,7 @@ public class PhotoPresentation extends Presentation {
 
 		// pick any corner to start
 		Point2D.Float p1 = new Point2D.Float();
-		double r = Math.random();
+		double r = previous == null ? Math.random() : corner(previous.p1);
 		if (r >= 0.5) {
 			p1.x = id.width - (int) (sd.width / s1);
 		}
@@ -300,14 +353,18 @@ public class PhotoPresentation extends Presentation {
 
 		// pick any corner to finish
 		Point2D.Float p2 = new Point2D.Float();
-		r = Math.random();
+		r = previous == null ? Math.random() : corner(previous.p2);
 		if (r >= 0.5) {
 			p2.x = id.width - (int) (sd.width / s2);
 		}
 		if ((r >= 0.25 && r < 0.5) || r >= 0.75) {
 			p2.y = id.height - (int) (sd.height / s2);
 		}
-		return new PhotoPan(image, p1, p2, s1, s2);
+		return new PhotoPan(photo, p1, p2, s1, s2);
+	}
+
+	private static double corner(Point2D.Float point) {
+		return (point.x > 0 ? 0.5 : 0) + (point.y > 0 ? 0.25 : 0);
 	}
 
 	@Override
@@ -318,7 +375,7 @@ public class PhotoPresentation extends Presentation {
 	}
 
 	private void paintLocked(Graphics2D g) {
-		if (current == null) {
+		if (current == null || current.image == null) {
 			paintHelp(g, HELP, "");
 			return;
 		}
@@ -389,6 +446,7 @@ public class PhotoPresentation extends Presentation {
 	 * is 0, a hard cut across the cycle; set {@code fade:} to opt in.
 	 */
 	static final class PhotoPan {
+		final LoadedPhoto photo;
 		final BufferedImage image;
 		final Point2D.Float p1;
 		final Point2D.Float p2;
@@ -396,7 +454,12 @@ public class PhotoPresentation extends Presentation {
 		final float s2;
 
 		PhotoPan(BufferedImage image, Point2D.Float p1, Point2D.Float p2, float s1, float s2) {
-			this.image = image;
+			this(LoadedPhoto.fromImage(image), p1, p2, s1, s2);
+		}
+
+		PhotoPan(LoadedPhoto photo, Point2D.Float p1, Point2D.Float p2, float s1, float s2) {
+			this.photo = photo;
+			this.image = photo.getView();
 			this.p1 = p1;
 			this.p2 = p2;
 			this.s1 = s1;
@@ -404,7 +467,7 @@ public class PhotoPresentation extends Presentation {
 		}
 
 		void release() {
-			image.flush();
+			photo.dispose();
 		}
 
 		void draw(Graphics2D g, float dt, String mode, float alpha) {
@@ -631,7 +694,209 @@ public class PhotoPresentation extends Presentation {
 			if ((current != null && candidate == current.image) || (outgoing != null && candidate == outgoing.image)) {
 				return true;
 			}
-			return images.contains(candidate);
+			for (LoadedPhoto cached : images) {
+				if (candidate == cached.getView()) {
+					return true;
+				}
+			}
+			return false;
 		}
 	}
+	@Override
+	public void setSize(Dimension size) {
+		synchronized (images) {
+			if (width == size.width && height == size.height) {
+				return;
+			}
+			super.setSize(size);
+			// Reframe the displayed bitmaps; only queued photos need new pixel data.
+			if (current != null) {
+				current = createPan(current.photo, current);
+			}
+			if (outgoing != null) {
+				outgoing = createPan(outgoing.photo, outgoing);
+			}
+			loadAgain = true;
+			runLoad(generation, directoryForCatalog(catalog), false);
+		}
+	}
+
+	/**
+	 * Pixel size of the bitmap used for panning: the screen-covering size times 1.1, matching
+	 * {@code s1 = s2 * 1.1}. Returns null when that would not be a downscale.
+	 */
+	static Dimension scaledSize(int imageWidth, int imageHeight, int screenWidth, int screenHeight) {
+		if (imageWidth <= 0 || imageHeight <= 0 || screenWidth <= 0 || screenHeight <= 0) {
+			return null;
+		}
+		float cover = Math.max(screenWidth / (float) imageWidth, screenHeight / (float) imageHeight);
+		float zoom = cover * 1.1f;
+		if (zoom >= 1f) {
+			return null;
+		}
+		int targetWidth = Math.round(imageWidth * zoom);
+		int targetHeight = Math.round(imageHeight * zoom);
+		if (targetWidth >= imageWidth || targetHeight >= imageHeight || targetWidth < 1 || targetHeight < 1) {
+			return null;
+		}
+		return new Dimension(targetWidth, targetHeight);
+	}
+
+	/**
+	 * The bitmap on screen, plus the local file it was read from. The full-resolution image is not
+	 * retained.
+	 */
+	static final class LoadedPhoto {
+		private final File file;
+		private BufferedImage view;
+		private int sourceWidth;
+		private int sourceHeight;
+		private int forWidth = -1;
+		private int forHeight = -1;
+		private boolean disposed;
+
+		private LoadedPhoto(File file) {
+			this.file = file;
+		}
+
+		static LoadedPhoto fromImage(BufferedImage image) {
+			if (image == null) {
+				throw new IllegalArgumentException("Missing photo");
+			}
+			LoadedPhoto photo = new LoadedPhoto(null);
+			photo.view = image;
+			return photo;
+		}
+
+		static LoadedPhoto load(File file, int screenWidth, int screenHeight) throws IOException {
+			LoadedPhoto photo = new LoadedPhoto(file);
+			if (screenWidth <= 0 || screenHeight <= 0) {
+				return photo;
+			}
+			if (!photo.reload(screenWidth, screenHeight)) {
+				throw new IOException("Could not read " + file.getName());
+			}
+			return photo;
+		}
+
+		private synchronized boolean fits(int screenWidth, int screenHeight) {
+			return file == null || screenWidth <= 0 || screenHeight <= 0
+					|| !needsReload(screenWidth, screenHeight);
+		}
+
+		private LoadedPhoto resized(int screenWidth, int screenHeight) throws IOException {
+			synchronized (this) {
+				if (disposed) {
+					return null;
+				}
+			}
+			return fits(screenWidth, screenHeight) ? this : load(file, screenWidth, screenHeight);
+		}
+
+		/**
+		 * @return false when a first read fails and there is no view to keep
+		 */
+		boolean reload(int screenWidth, int screenHeight) {
+			if (file == null) {
+				return getView() != null;
+			}
+			if (screenWidth <= 0 || screenHeight <= 0) {
+				return view != null;
+			}
+			synchronized (this) {
+				if (disposed) {
+					return false;
+				}
+				if (!needsReload(screenWidth, screenHeight)) {
+					return true;
+				}
+			}
+
+			BufferedImage source = null;
+			try {
+				source = ImageIO.read(file);
+				if (source == null) {
+					throw new IOException("Unknown image type");
+				}
+				int sw = source.getWidth();
+				int sh = source.getHeight();
+				Dimension target = scaledSize(sw, sh, screenWidth, screenHeight);
+				BufferedImage next = source;
+				if (target != null) {
+					BufferedImage scaled = ImageScaler.scaleDown(source, target.width, target.height);
+					if (scaled != null && scaled != source) {
+						next = scaled;
+					}
+				}
+				if (next != source) {
+					source.flush();
+				}
+				source = null;
+
+				BufferedImage previous;
+				synchronized (this) {
+					if (disposed) {
+						next.flush();
+						return false;
+					}
+					previous = view;
+					view = next;
+					sourceWidth = sw;
+					sourceHeight = sh;
+					forWidth = screenWidth;
+					forHeight = screenHeight;
+				}
+				if (previous != null && previous != next) {
+					previous.flush();
+				}
+				return true;
+			} catch (Exception e) {
+				boolean kept;
+				synchronized (this) {
+					kept = view != null;
+				}
+				if (kept) {
+					Trace.trace(Trace.WARNING, "Could not rescale photo " + file.getName() + ": " + e.getMessage());
+				}
+				return kept;
+			} finally {
+				if (source != null) {
+					source.flush();
+				}
+			}
+		}
+
+		private boolean needsReload(int screenWidth, int screenHeight) {
+			if (view != null && forWidth == screenWidth && forHeight == screenHeight) {
+				return false;
+			}
+			if (view == null || sourceWidth <= 0 || sourceHeight <= 0) {
+				return true;
+			}
+			Dimension target = scaledSize(sourceWidth, sourceHeight, screenWidth, screenHeight);
+			if (target == null) {
+				return view.getWidth() != sourceWidth || view.getHeight() != sourceHeight;
+			}
+			return view.getWidth() != target.width || view.getHeight() != target.height;
+		}
+
+		BufferedImage getView() {
+			synchronized (this) {
+				return view;
+			}
+		}
+
+		private void dispose() {
+			BufferedImage old;
+			synchronized (this) {
+				disposed = true;
+				old = view;
+				view = null;
+			}
+			if (old != null) {
+				old.flush();
+			}
+		}
+	}
+
 }

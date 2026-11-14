@@ -334,9 +334,9 @@ public class PhotoFadeTest {
 	@SuppressWarnings("unchecked")
 	private static void queue(PhotoPresentation photos, TestImage... images) throws Exception {
 		// Seed the loader's queue without starting background work or requiring a CDS.
-		List<BufferedImage> queue = (List<BufferedImage>) field(photos, "images");
+		List<PhotoPresentation.LoadedPhoto> queue = (List<PhotoPresentation.LoadedPhoto>) field(photos, "images");
 		for (TestImage image : images) {
-			queue.add(image);
+			queue.add(PhotoPresentation.LoadedPhoto.fromImage(image));
 		}
 	}
 
