@@ -24,10 +24,10 @@ jobs:
           cache-dependency-path: CDS/ui/pnpm-lock.yaml
           # the ant ui target installs and builds
           install: false
-      - name: Build
+      - name: Build and test
         run: |
           git config --global --add safe.directory ${GITHUB_WORKSPACE}
-          ant build
+          ant build test
       - name: Add run ID
         run: echo $GITHUB_RUN_ID > dist/github_run_id.txt
       - uses: actions/upload-artifact@v7.0.2
