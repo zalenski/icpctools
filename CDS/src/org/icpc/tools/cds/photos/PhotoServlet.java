@@ -85,6 +85,16 @@ public class PhotoServlet extends HttpServlet {
 					}
 					return;
 				}
+				if ("PUT".equals(method)) {
+					PhotoMetadata supplied = PhotoMetadata.fromJson(readJson(request.getInputStream()));
+					PhotoMetadata stored = store().updateMetadata(parts[2], parts[4], supplied);
+					if (stored == null) {
+						response.sendError(404);
+					} else {
+						json(response, stored.toJson());
+					}
+					return;
+				}
 				if ("DELETE".equals(method)) {
 					String photoId = request.getParameter("photoId");
 					if (photoId == null || photoId.isEmpty()) {

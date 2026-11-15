@@ -98,6 +98,13 @@ public final class CDSPhotoClient {
 		return PhotoMetadata.fromJson(response(request));
 	}
 
+	PhotoMetadata updateMetadata(String catalog, String importId, PhotoMetadata metadata) throws IOException {
+		HttpRequest request = request(importPath(catalog, importId)).header("Content-Type", "application/json")
+				.PUT(BodyPublishers.ofString(json(metadata.toJson()))).build();
+		HttpResponse<String> response = PhotoHttp.send(client, request, BodyHandlers.ofString(StandardCharsets.UTF_8));
+		return response.statusCode() == 404 ? null : PhotoMetadata.fromJson(response(response));
+	}
+
 	void delete(String catalog, String importId, String photoId) throws IOException {
 		response(request(importPath(catalog, importId) + "?photoId=" + encode(photoId)).DELETE().build());
 	}
@@ -117,7 +124,10 @@ public final class CDSPhotoClient {
 	}
 
 	private JsonObject response(HttpRequest request) throws IOException {
-		HttpResponse<String> response = PhotoHttp.send(client, request, BodyHandlers.ofString(StandardCharsets.UTF_8));
+		return response(PhotoHttp.send(client, request, BodyHandlers.ofString(StandardCharsets.UTF_8)));
+	}
+
+	private static JsonObject response(HttpResponse<String> response) throws IOException {
 		int code = response.statusCode();
 		if (code < 200 || code >= 300) {
 			throw new IOException("CDS photo API returned HTTP " + code);

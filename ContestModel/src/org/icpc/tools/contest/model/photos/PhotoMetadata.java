@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 import org.icpc.tools.contest.model.feed.JSONParser;
 import org.icpc.tools.contest.model.feed.JSONParser.JsonObject;
@@ -145,6 +146,19 @@ public final class PhotoMetadata {
 	public PhotoMetadata withDetails(String title2, String owner2, String license2) {
 		return new PhotoMetadata(sourceType, sourceUri, photoId, title2, owner2, license2, originalUrl, fetchTime, file,
 				originalFile, width, height, maxWidth, maxHeight, importId);
+	}
+
+	public PhotoMetadata withLimits(Integer maxWidth2, Integer maxHeight2) {
+		return new PhotoMetadata(sourceType, sourceUri, photoId, title, owner, license, originalUrl, fetchTime, file,
+				originalFile, width, height, maxWidth2, maxHeight2, importId);
+	}
+
+	/** Whether the records describe the same prepared image, regardless of metadata and allocated filename. */
+	public boolean sameImage(PhotoMetadata other) {
+		return other != null && Objects.equals(getImportId(), other.getImportId())
+				&& Objects.equals(sourceType, other.sourceType) && Objects.equals(sourceUri, other.sourceUri)
+				&& Objects.equals(photoId, other.photoId) && Objects.equals(originalUrl, other.originalUrl)
+				&& fetchTime == other.fetchTime && width == other.width && height == other.height;
 	}
 
 	public JsonObject toJson() {

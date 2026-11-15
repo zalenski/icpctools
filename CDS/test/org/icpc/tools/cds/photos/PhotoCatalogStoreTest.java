@@ -80,6 +80,40 @@ public class PhotoCatalogStoreTest {
 		}
 	}
 
+	@Test
+	public void metadataUpdatesPreserveImageAndCannotClaimAnotherImportsPhoto() throws Exception {
+		File config = Files.createTempDirectory("photo-store-metadata").toFile();
+		try {
+			PhotoCatalogStore store = new PhotoCatalogStore(config);
+			PhotoMetadata first = store.upload("photos", "first", metadata("first"), bytes("image"));
+			File image = new File(config, "present/photos/" + first.getFile());
+			java.nio.file.attribute.FileTime timestamp = Files.getLastModifiedTime(image.toPath());
+			PhotoMetadata updated = store.updateMetadata("photos", "first",
+					first.withDetails("New title", "New owner", null).withLimits(100, 200).withFile("ignored.jpg"));
+			assertEquals(first.getFile(), updated.getFile());
+			assertEquals("New title", store.index("photos").get(0).getTitle());
+			assertEquals(timestamp, Files.getLastModifiedTime(image.toPath()));
+			assertEquals("image", Files.readString(image.toPath()));
+			try {
+				store.updateMetadata("photos", "second", first);
+				fail("Ownership mismatch must be rejected");
+			} catch (IllegalArgumentException expected) {
+				assertEquals("first", store.index("photos").get(0).getImportId());
+			}
+			PhotoMetadata changed = new PhotoMetadata("test", "test:source", "1", "Changed", "Owner", null,
+					"https://example.test/different.jpg", 2L, first.getFile()).withImportId("first");
+			try {
+				store.updateMetadata("photos", "first", changed);
+				fail("Changed image requires an upload");
+			} catch (IllegalArgumentException expected) {
+				assertEquals("image", Files.readString(image.toPath()));
+			}
+			org.junit.Assert.assertNull(store.updateMetadata("photos", "other", metadata("other")));
+		} finally {
+			deleteTree(config);
+		}
+	}
+
 	private static PhotoMetadata metadata(String importId) {
 		return new PhotoMetadata("test", "test:source", "1", "Title", "Owner", null,
 				"https://example.test/photo.jpg", 1L, "photo.jpg").withImportId(importId);

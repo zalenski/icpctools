@@ -56,6 +56,13 @@ final class CatalogPublisher implements PhotoSync.Publisher {
 				if (!PhotoSync.isSafeName(photo.getFile())) {
 					throw new IOException("Unsafe local photo filename");
 				}
+				if (expected.sameImage(previous)) {
+					PhotoMetadata stored = cds.updateMetadata(catalog, importId, expected);
+					if (stored != null) {
+						remote.put(photo.getPhotoId(), stored);
+						continue;
+					}
+				}
 				File image = new File(cache, photo.getFile());
 				if (!image.isFile()) {
 					if (complete) {

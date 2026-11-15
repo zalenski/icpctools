@@ -90,6 +90,35 @@ public final class PhotoCatalogStore {
 		}
 	}
 
+	/** Updates metadata for an existing image without replacing its bytes or allocated filename. */
+	public synchronized PhotoMetadata updateMetadata(String catalog, String importId, PhotoMetadata supplied)
+			throws IOException {
+		checkImport(importId);
+		if (supplied == null || supplied.getPhotoId() == null || supplied.getPhotoId().isEmpty()
+				|| !importId.equals(supplied.getImportId())) {
+			throw new IllegalArgumentException("Invalid photo metadata or ownership");
+		}
+		File folder = folder(catalog);
+		List<PhotoMetadata> records = PhotoMetadata.readIndex(folder);
+		PhotoMetadata previous = find(records, importId, supplied.getPhotoId());
+		if (previous == null) {
+			return null;
+		}
+		if (!safeFile(previous.getFile())) {
+			throw new IOException("Invalid indexed photo filename");
+		}
+		if (!inside(folder, previous.getFile()).isFile()) {
+			return null;
+		}
+		if (!previous.sameImage(supplied)) {
+			throw new IllegalArgumentException("Changed images require an upload");
+		}
+		PhotoMetadata stored = supplied.withFile(previous.getFile());
+		records.set(records.indexOf(previous), stored);
+		PhotoMetadata.writeIndex(folder, records);
+		return stored;
+	}
+
 	public synchronized void delete(String catalog, String importId, String photoId) throws IOException {
 		checkImport(importId);
 		File folder = folder(catalog);

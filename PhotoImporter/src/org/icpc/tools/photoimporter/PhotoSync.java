@@ -123,6 +123,10 @@ public final class PhotoSync {
 		String label = displayFolder.getName() + "/" + importId;
 		Trace.trace(Trace.INFO, "Photo sync " + label + " starting");
 		// Fail before touching disk so an API or network error leaves the folders as they are.
+		LocalPhotoSource local = source instanceof LocalPhotoSource fileSource ? fileSource : null;
+		if (local != null) {
+			local.begin(displayFolder, importId);
+		}
 		List<Photo> remote = source.listPhotos();
 		if (remote == null) {
 			throw new IOException("Photo source returned no list");
@@ -134,7 +138,7 @@ public final class PhotoSync {
 		if (!displayFolder.exists() && !displayFolder.mkdirs()) {
 			throw new IOException("Could not create photo folder");
 		}
-		if (!originalsFolder.exists() && !originalsFolder.mkdirs()) {
+		if (local == null && !originalsFolder.exists() && !originalsFolder.mkdirs()) {
 			throw new IOException("Could not create photo originals folder");
 		}
 
@@ -175,8 +179,12 @@ public final class PhotoSync {
 				PhotoMetadata existing = oursById.get(photo.getId());
 				PhotoMetadata updated = null;
 				try {
-					Ensure ensured = ensure(displayFolder, originalsFolder, source, photo, existing, maxWidth, maxHeight, now);
-					updated = ensured.meta.withImportId(importId);
+					Ensure ensured = local == null
+							? ensure(displayFolder, originalsFolder, source, photo, existing, maxWidth, maxHeight, now)
+							: new Ensure(local.prepare(photo, displayFolder, existing, maxWidth, maxHeight, now), false);
+					if (ensured.meta != null) {
+						updated = ensured.meta.withImportId(importId);
+					}
 					if (ensured.downloaded) {
 						downloaded++;
 						changed = true;
@@ -198,9 +206,12 @@ public final class PhotoSync {
 				progress.accept(new Progress("preparing", remoteCount, remote.size(), downloaded, failed));
 				checkStopped();
 				long elapsed = clock.getAsLong();
-				if (changed && elapsed - lastCheckpoint >= CHECKPOINT_INTERVAL_MS) {
+				if ((changed || (local != null && local.isDirty())) && elapsed - lastCheckpoint >= CHECKPOINT_INTERVAL_MS) {
 					List<PhotoMetadata> progress = merged(others, checkpoint.values());
 					PhotoMetadata.writeIndex(displayFolder, progress);
+					if (local != null) {
+						local.checkpoint();
+					}
 					this.progress.accept(new Progress("uploading", remoteCount, remote.size(), downloaded, failed));
 					publisher.publish(progress, false);
 					Trace.trace(Trace.INFO, "Photo sync " + label + " processed " + remoteCount + "/" + remote.size()
@@ -217,12 +228,18 @@ public final class PhotoSync {
 				Thread.interrupted();
 				try {
 					PhotoMetadata.writeIndex(displayFolder, merged(others, checkpoint.values()));
+					if (local != null) {
+						local.checkpoint();
+					}
 				} finally {
 					Thread.currentThread().interrupt();
 				}
 			}
 		}
 
+		if (local != null) {
+			local.verifyScan();
+		}
 		int removed = 0;
 		for (PhotoMetadata old : oursById.values()) {
 			checkStopped();
@@ -236,6 +253,10 @@ public final class PhotoSync {
 
 		if (changed) {
 			PhotoMetadata.writeIndex(displayFolder, merged(others, current.values()));
+		}
+		if (local != null) {
+			local.finishScan();
+			local.checkpoint();
 		}
 		checkStopped();
 		progress.accept(new Progress("uploading", remoteCount, remote.size(), downloaded, failed));
@@ -351,7 +372,7 @@ public final class PhotoSync {
 		}
 	}
 
-	private static String chooseName(File folder, String preferred, String existingName) {
+	static String chooseName(File folder, String preferred, String existingName) {
 		if (isSafeName(existingName)) {
 			return existingName;
 		}
@@ -423,7 +444,7 @@ public final class PhotoSync {
 		return a.equals(b);
 	}
 
-	private static void move(File tmp, File dest) throws IOException {
+	static void move(File tmp, File dest) throws IOException {
 		try {
 			Files.move(tmp.toPath(), dest.toPath(), StandardCopyOption.REPLACE_EXISTING,
 					StandardCopyOption.ATOMIC_MOVE);

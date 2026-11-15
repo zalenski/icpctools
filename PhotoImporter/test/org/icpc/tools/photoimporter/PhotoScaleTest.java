@@ -9,6 +9,27 @@ import static org.junit.Assert.assertEquals;
 @RunWith(JUnit4.class)
 public class PhotoScaleTest {
 	@Test
+	public void rejectsUndecodableInputEvenWithoutResizeAndPreservesDestination() throws Exception {
+		java.nio.file.Path work = java.nio.file.Files.createTempDirectory("invalid-photo-scale");
+		java.nio.file.Path input = work.resolve("input.png");
+		java.nio.file.Path output = work.resolve("output.png");
+		try {
+			java.nio.file.Files.writeString(input, "not an image");
+			java.nio.file.Files.writeString(output, "previous image");
+			try {
+				PhotoScale.writeDisplay(input.toFile(), output.toFile(), null, null);
+				org.junit.Assert.fail("Must not copy undecodable input");
+			} catch (PhotoScale.InvalidImageException expected) {
+				assertEquals("previous image", java.nio.file.Files.readString(output));
+			}
+		} finally {
+			java.nio.file.Files.deleteIfExists(input);
+			java.nio.file.Files.deleteIfExists(output);
+			java.nio.file.Files.deleteIfExists(work);
+		}
+	}
+
+	@Test
 	public void fitsInsideBothLimits() {
 		PhotoScale.Size size = PhotoScale.fit(4000, 3000, Integer.valueOf(1920), Integer.valueOf(1080));
 		assertEquals(1440, size.width);

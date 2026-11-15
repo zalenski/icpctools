@@ -20,12 +20,13 @@ import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public class PhotoImportIntegrationTest {
 	@Test
-	public void localImportUsesHttpKeepsOriginalsLocalAndResumesWithoutReplacingPhotos() throws Exception {
+	public void localImportUsesHttpReadsOriginalsDirectlyAndResumesWithoutReplacingPhotos() throws Exception {
 		File work = Files.createTempDirectory("photo-http-integration").toFile();
 		File config = new File(work, "cds");
 		File data = new File(work, "importer");
@@ -50,8 +51,7 @@ public class PhotoImportIntegrationTest {
 			for (PhotoMetadata metadata : records) {
 				assertEquals("local-import", metadata.getImportId());
 				assertEquals(20, ImageIO.read(new File(display, metadata.getFile())).getWidth());
-				File original = new File(data, "originals/photos-test/" + metadata.getOriginalFile());
-				assertEquals(40, ImageIO.read(original).getWidth());
+				assertNull(metadata.getOriginalFile());
 			}
 			assertFalse(new File(config, "present/original-photos").exists());
 			assertFalse(new File(config, "originals").exists());
@@ -83,8 +83,8 @@ public class PhotoImportIntegrationTest {
 			}
 			assertEquals(1, client.index("photos-one").size());
 			assertEquals(1, client.index("photos-two").size());
-			assertTrue(new File(data, "originals/photos-one").isDirectory());
-			assertTrue(new File(data, "originals/photos-two").isDirectory());
+			assertFalse(new File(data, "originals/photos-one").exists());
+			assertFalse(new File(data, "originals/photos-two").exists());
 
 			JsonObject updated = definition(source, 10);
 			client.sources("photos-one", updated);
@@ -157,7 +157,61 @@ public class PhotoImportIntegrationTest {
 			}
 			assertEquals(Files.readString(output.toPath()), 0, process.exitValue());
 			assertEquals(1, server.store.index("photos-cli").size());
-			assertTrue(new File(data, "originals/photos-cli").isDirectory());
+			assertFalse(new File(data, "originals/photos-cli").exists());
+		} finally {
+			deleteTree(work);
+		}
+	}
+
+	@Test
+	public void unchangedOutputUpdatesOnlyMetadataAndMissingServerFileIsReuploaded() throws Exception {
+		File work = Files.createTempDirectory("photo-http-metadata-only").toFile();
+		File config = new File(work, "cds");
+		File data = new File(work, "importer");
+		File input = new File(work, "input.png");
+		assertTrue(ImageIO.write(new BufferedImage(40, 20, BufferedImage.TYPE_INT_RGB), "png", input));
+		try (PhotoApiTestServer server = new PhotoApiTestServer(config)) {
+			CDSPhotoClient client = new CDSPhotoClient(server.uri(), "admin", "password", false);
+			client.sources("photos-test", definition(input, 100));
+			try (PhotoSyncService service = new PhotoSyncService(client, data)) {
+				assertTrue(service.tick());
+			}
+			PhotoMetadata original = client.index("photos-test").get(0);
+			File display = new File(config, "present/photos-test/" + original.getFile());
+			File cached = new File(data, "cache/photos-test/" + original.getFile());
+			java.nio.file.attribute.FileTime sentinel = java.nio.file.attribute.FileTime.fromMillis(1000);
+			Files.setLastModifiedTime(display.toPath(), sentinel);
+			Files.setLastModifiedTime(cached.toPath(), sentinel);
+			java.util.concurrent.atomic.AtomicInteger uploads = new java.util.concurrent.atomic.AtomicInteger();
+			server.beforeUpload = uploads::incrementAndGet;
+			client.sources("photos-test", definition(input, 200));
+			try (PhotoSyncService service = new PhotoSyncService(client, data)) {
+				assertTrue(service.tick());
+				assertEquals(0, service.status().get(0).uploaded());
+			}
+			PhotoMetadata updated = client.index("photos-test").get(0);
+			assertEquals(Integer.valueOf(200), updated.getMaxWidth());
+			assertEquals(original.getFetchTime(), updated.getFetchTime());
+			assertEquals(sentinel, Files.getLastModifiedTime(display.toPath()));
+			assertEquals(sentinel, Files.getLastModifiedTime(cached.toPath()));
+			assertEquals(0, uploads.get());
+			// A changed output really is reprocessed and uploaded.
+			client.sources("photos-test", definition(input, 20));
+			try (PhotoSyncService service = new PhotoSyncService(client, data)) {
+				assertTrue(service.tick());
+			}
+			assertEquals(1, uploads.get());
+			assertEquals(20, ImageIO.read(display).getWidth());
+			// A missing server file must not turn a metadata update into a phantom success.
+			Files.delete(display.toPath());
+			JsonObject heightLimited = definition(input, 30);
+			((JsonObject) heightLimited.getArray("sources")[0]).put("maxHeight", 10);
+			client.sources("photos-test", heightLimited);
+			try (PhotoSyncService service = new PhotoSyncService(client, data)) {
+				assertTrue(service.tick());
+			}
+			assertEquals(2, uploads.get());
+			assertEquals(20, ImageIO.read(display).getWidth());
 		} finally {
 			deleteTree(work);
 		}
