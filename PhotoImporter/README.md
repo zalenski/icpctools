@@ -1,8 +1,8 @@
 # Photo importer (development)
 
 Runs independently of CDS. `PhotoImporter` depends only on ContestModel; CDS has
-no Flickr integration or image-processing worker. A web UI and distribution
-packaging are later steps.
+no Flickr integration or image-processing worker. The standalone web UI uses the
+same import service. Standard distribution/WAR packaging is a later step.
 
 Build after ContestModel:
 
@@ -38,6 +38,48 @@ The same main class runs from the CLI with classpath `PhotoImporter/staging/*`.
 The data directory contains `credentials.json` (named Flickr profiles), `originals/`
 and `cache/`, separated by catalog, plus importer-owned `state.json`. The cache holds display copies and a resume
 index, allowing upload retries without downloading or resizing again.
+
+## Web UI
+
+Build the frontend with Node 24+ and pnpm, then package the standalone web launcher:
+
+```sh
+cd PhotoImporter/ui
+pnpm install
+pnpm check
+pnpm test
+cd ../..
+ant -f ContestModel/build.xml jar
+ant -f PhotoImporter/build.xml web
+java -cp 'PhotoImporter/staging/*' org.icpc.tools.photoimporter.PhotoWebServer --data /path/to/photo-importer
+```
+
+Open `http://127.0.0.1:8787/photo-importer/`. Connect to the target CDS, manage
+Flickr key profiles, create catalogs and add Flickr/local sources. Activation is
+saved on CDS; local periodic selection and restart preferences belong to this
+importer. Run now works for inactive sources without enabling periodic execution.
+Removing a source preserves its photos. Status, photo results and failures remain
+available while imports run independently of the browser tab.
+
+For IntelliJ, run `org.icpc.tools.photoimporter.PhotoWebServer` in module
+`PhotoImporter` after `pnpm build`. It reads `PhotoImporter/ui/build` from the repo
+root, or use `--ui DIRECTORY`. `--port PORT` changes the listener; `--context PATH`
+must match the frontend's `PHOTO_IMPORTER_BASE` build setting (default
+`/photo-importer`). The launcher binds to localhost; production Liberty hosting
+and distribution integration remain step 5.
+
+The web launcher stores private CDS credentials in `connection.json` and keys in
+`credentials.json`, under `--data`. Browser responses never contain those secrets.
+Target-specific job data is stored under `targets/<target-id>/`. Existing CLI data
+at the data root is reused when its saved target matches. Profiles are shared
+across targets, but job selection and cached images are separate.
+
+Frontend development: run the Java launcher, then `pnpm dev` in `PhotoImporter/ui`.
+Vite proxies `/photo-importer/api` to `http://127.0.0.1:8787` (override with
+`IMPORTER_URL`). Vitest runs TypeScript behavior tests; `pnpm test:watch` watches
+changes. Type checking and production builds are separate checks. The frontend
+uses the same Svelte/Tailwind/component conventions as `CDS/ui`; Java serves its
+static output, with no Node server needed at runtime.
 
 Definitions remain on CDS in each catalog's `photo-sources.json`. Use
 `--catalog photos-teams --sources /path/to/photo-sources.json` to install a file
@@ -80,7 +122,7 @@ and only for this import. An unavailable source directory never means an empty
 catalog. Existing original copies from older importer versions are no longer
 needed for local sources; no new copies are made.
 
-## Jobs (CLI and future UI)
+## Jobs (CLI and web UI)
 
 A new importer discovers definitions without automatically taking over their jobs.
 For continuous sync, explicitly select jobs; repeat `--start` for several imports:
