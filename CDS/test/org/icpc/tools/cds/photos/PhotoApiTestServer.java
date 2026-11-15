@@ -33,6 +33,7 @@ import jakarta.servlet.http.Part;
 final class PhotoApiTestServer implements AutoCloseable {
 	final PhotoCatalogStore store;
 	private final HttpServer server;
+	volatile Runnable beforeUpload = () -> { };
 
 	PhotoApiTestServer(File config) throws IOException {
 		store = new PhotoCatalogStore(config);
@@ -45,6 +46,9 @@ final class PhotoApiTestServer implements AutoCloseable {
 		server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
 		server.createContext("/api/photos", exchange -> {
 			byte[] body = exchange.getRequestBody().readAllBytes();
+			if ("POST".equals(exchange.getRequestMethod())) {
+				beforeUpload.run();
+			}
 			Map<String, byte[]> parts = multipart(exchange.getRequestHeaders().getFirst("Content-Type"), body);
 			String expected = "Basic " + Base64.getEncoder().encodeToString("admin:password".getBytes(StandardCharsets.UTF_8));
 			boolean authenticated = expected.equals(exchange.getRequestHeaders().getFirst("Authorization"));

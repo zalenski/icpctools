@@ -2,6 +2,7 @@ package org.icpc.tools.photoimporter;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
@@ -13,6 +14,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.LongSupplier;
+import java.util.function.Consumer;
+import java.util.function.BooleanSupplier;
 
 import org.icpc.tools.contest.model.photos.PhotoMetadata;
 import org.icpc.tools.contest.Trace;
@@ -31,6 +34,24 @@ public final class PhotoSync {
 
 	private final LongSupplier clock;
 	private final Publisher publisher;
+	private final Consumer<Progress> progress;
+	private final BooleanSupplier cancelled;
+
+	/** Immutable progress snapshot, independent of logs and suitable for a UI. */
+	public record Progress(String phase, int processed, int total, int downloaded, int failed) { }
+
+	static void checkCancelled() throws InterruptedIOException {
+		if (Thread.currentThread().isInterrupted()) {
+			throw new InterruptedIOException("Photo import stopped");
+		}
+	}
+
+	private void checkStopped() throws InterruptedIOException {
+		if (cancelled.getAsBoolean()) {
+			Thread.currentThread().interrupt();
+		}
+		checkCancelled();
+	}
 
 	public PhotoSync() {
 		this(() -> System.nanoTime() / 1_000_000);
@@ -41,8 +62,18 @@ public final class PhotoSync {
 	}
 
 	PhotoSync(LongSupplier clock, Publisher publisher) {
+		this(clock, publisher, update -> { });
+	}
+
+	PhotoSync(LongSupplier clock, Publisher publisher, Consumer<Progress> progress) {
+		this(clock, publisher, progress, () -> false);
+	}
+
+	PhotoSync(LongSupplier clock, Publisher publisher, Consumer<Progress> progress, BooleanSupplier cancelled) {
 		this.clock = clock;
 		this.publisher = publisher;
+		this.progress = progress;
+		this.cancelled = cancelled;
 	}
 
 	/** Default catalog folder, served by CDS at {@code /presentation/photos}. */
@@ -87,6 +118,8 @@ public final class PhotoSync {
 			throw new IOException("Missing photo folder or source");
 		}
 
+		checkStopped();
+		progress.accept(new Progress("listing", 0, 0, 0, 0));
 		String label = displayFolder.getName() + "/" + importId;
 		Trace.trace(Trace.INFO, "Photo sync " + label + " starting");
 		// Fail before touching disk so an API or network error leaves the folders as they are.
@@ -95,6 +128,7 @@ public final class PhotoSync {
 			throw new IOException("Photo source returned no list");
 		}
 
+		checkStopped();
 		Trace.trace(Trace.INFO, "Photo sync " + label + " listed " + remote.size() + " photos");
 
 		if (!displayFolder.exists() && !displayFolder.mkdirs()) {
@@ -127,50 +161,71 @@ public final class PhotoSync {
 		int downloaded = 0;
 		int remoteCount = 0;
 		int failed = 0;
-		for (Photo photo : remote) {
-			if (photo == null || photo.getId() == null || photo.getId().isEmpty()) {
-				continue;
-			}
-			if (photo.getOriginalUrl() == null || photo.getOriginalUrl().isEmpty()) {
-				continue;
-			}
-			remoteCount++;
-			PhotoMetadata existing = oursById.get(photo.getId());
-			PhotoMetadata updated = null;
-			try {
-				Ensure ensured = ensure(displayFolder, originalsFolder, source, photo, existing, maxWidth, maxHeight, now);
-				updated = ensured.meta.withImportId(importId);
-				if (ensured.downloaded) {
-					downloaded++;
-					changed = true;
+		try {
+			for (Photo photo : remote) {
+				checkStopped();
+				if (photo == null || photo.getId() == null || photo.getId().isEmpty()) {
+					continue;
 				}
-			} catch (IOException e) {
-				failed++;
-				Trace.trace(Trace.WARNING, "Photo sync " + label + " failed for photo " + photo.getId() + ": "
-						+ PhotoHttp.redact(e.getMessage()));
-				if (existing != null) {
-					updated = existing.withDetails(photo.getTitle(), photo.getOwner(), photo.getLicense());
+				if (photo.getOriginalUrl() == null || photo.getOriginalUrl().isEmpty()) {
+					continue;
+				}
+				remoteCount++;
+				progress.accept(new Progress("preparing", remoteCount - 1, remote.size(), downloaded, failed));
+				PhotoMetadata existing = oursById.get(photo.getId());
+				PhotoMetadata updated = null;
+				try {
+					Ensure ensured = ensure(displayFolder, originalsFolder, source, photo, existing, maxWidth, maxHeight, now);
+					updated = ensured.meta.withImportId(importId);
+					if (ensured.downloaded) {
+						downloaded++;
+						changed = true;
+					}
+				} catch (IOException e) {
+					checkStopped();
+					failed++;
+					Trace.trace(Trace.WARNING, "Photo sync " + label + " failed for photo " + photo.getId() + ": "
+							+ PhotoHttp.redact(e.getMessage()));
+					if (existing != null) {
+						updated = existing.withDetails(photo.getTitle(), photo.getOwner(), photo.getLicense());
+					}
+				}
+				if (updated != null) {
+					current.put(photo.getId(), updated);
+					checkpoint.put(photo.getId(), updated);
+					changed |= !sameMetadata(existing, updated);
+				}
+				progress.accept(new Progress("preparing", remoteCount, remote.size(), downloaded, failed));
+				checkStopped();
+				long elapsed = clock.getAsLong();
+				if (changed && elapsed - lastCheckpoint >= CHECKPOINT_INTERVAL_MS) {
+					List<PhotoMetadata> progress = merged(others, checkpoint.values());
+					PhotoMetadata.writeIndex(displayFolder, progress);
+					this.progress.accept(new Progress("uploading", remoteCount, remote.size(), downloaded, failed));
+					publisher.publish(progress, false);
+					Trace.trace(Trace.INFO, "Photo sync " + label + " processed " + remoteCount + "/" + remote.size()
+							+ ", downloaded " + downloaded + ", failed " + failed + "; saved index");
+					lastCheckpoint = elapsed;
+					changed = false;
 				}
 			}
-			if (updated != null) {
-				current.put(photo.getId(), updated);
-				checkpoint.put(photo.getId(), updated);
-				changed |= !sameMetadata(existing, updated);
-			}
-			long elapsed = clock.getAsLong();
-			if (changed && elapsed - lastCheckpoint >= CHECKPOINT_INTERVAL_MS) {
-				List<PhotoMetadata> progress = merged(others, checkpoint.values());
-				PhotoMetadata.writeIndex(displayFolder, progress);
-				publisher.publish(progress, false);
-				Trace.trace(Trace.INFO, "Photo sync " + label + " processed " + remoteCount + "/" + remote.size()
-						+ ", downloaded " + downloaded + ", failed " + failed + "; saved index");
-				lastCheckpoint = elapsed;
-				changed = false;
+
+			checkStopped();
+		} finally {
+			if (Thread.currentThread().isInterrupted()) {
+				// Save completed local work without issuing more HTTP requests on cancellation.
+				Thread.interrupted();
+				try {
+					PhotoMetadata.writeIndex(displayFolder, merged(others, checkpoint.values()));
+				} finally {
+					Thread.currentThread().interrupt();
+				}
 			}
 		}
 
 		int removed = 0;
 		for (PhotoMetadata old : oursById.values()) {
+			checkStopped();
 			if (!current.containsKey(old.getPhotoId())) {
 				deleteOwned(displayFolder, old.getFile());
 				deleteOwned(originalsFolder, old.getOriginalFile());
@@ -182,6 +237,8 @@ public final class PhotoSync {
 		if (changed) {
 			PhotoMetadata.writeIndex(displayFolder, merged(others, current.values()));
 		}
+		checkStopped();
+		progress.accept(new Progress("uploading", remoteCount, remote.size(), downloaded, failed));
 		publisher.publish(merged(others, current.values()), true);
 		Trace.trace(Trace.INFO, "Photo sync " + label + " finished: processed " + remoteCount + "/" + remote.size()
 				+ ", downloaded " + downloaded + ", removed " + removed + ", failed " + failed);
@@ -241,6 +298,7 @@ public final class PhotoSync {
 				}
 				String displayName = chooseName(displayFolder, imageFileName(source.getType(), source.getUri(),
 						photo.getId(), photo.getOriginalUrl()), existing.getFile());
+				checkStopped();
 				PhotoScale.Written written = PhotoScale.writeDisplay(original, new File(displayFolder, displayName),
 						maxWidth, maxHeight);
 				PhotoMetadata updated = new PhotoMetadata(source.getType(), source.getUri(), photo.getId(),
@@ -266,7 +324,9 @@ public final class PhotoSync {
 		File displayDest = new File(displayFolder, displayName);
 		File originalTmp = File.createTempFile("photosync-", ".tmp", originalsFolder);
 		try {
+			checkStopped();
 			source.fetchOriginal(photo, originalTmp);
+			checkStopped();
 			if (!originalTmp.isFile() || originalTmp.length() == 0) {
 				throw new IOException("Empty image for photo " + photo.getId());
 			}

@@ -44,6 +44,7 @@ final class LocalPhotoSource implements PhotoSource {
 		files.clear();
 		try (Stream<Path> paths = Files.isDirectory(root) ? Files.walk(root) : Stream.of(root)) {
 			for (Path path : (Iterable<Path>) paths.filter(Files::isRegularFile).sorted()::iterator) {
+				PhotoSync.checkCancelled();
 				String name = path.getFileName().toString();
 				String lower = name.toLowerCase(Locale.ROOT);
 				if (lower.endsWith(".json") || lower.endsWith(".tmp")) {
