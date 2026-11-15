@@ -6,6 +6,7 @@ import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.geom.Point2D;
 import java.awt.image.BufferedImage;
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -48,6 +49,8 @@ public class PhotoPresentation extends Presentation {
 		String[] list(String directory) throws Exception;
 
 		BufferedImage open(String path) throws Exception;
+
+		long indexModified(String directory) throws Exception;
 	}
 
 	private volatile String mode = null;
@@ -67,6 +70,16 @@ public class PhotoPresentation extends Presentation {
 		public BufferedImage open(String path) throws Exception {
 			return ImageHelper.loadImage(path);
 		}
+
+		@Override
+		public long indexModified(String directory) throws Exception {
+			ContestSource source = ContestSource.getInstance();
+			if (source == null) {
+				return -1;
+			}
+			File index = source.getFile(directory + "/photos-index.json");
+			return index != null && index.exists() ? index.lastModified() : -1;
+		}
 	};
 
 	private volatile int durationMs = SECONDS_PER_PHOTO * 1000;
@@ -82,6 +95,8 @@ public class PhotoPresentation extends Presentation {
 	private int generation;
 	private int loadingGeneration = -1;
 	private int discardedImages;
+	private long indexModified = -1;
+	private volatile boolean needsListing;
 
 
 	@Override
@@ -109,13 +124,15 @@ public class PhotoPresentation extends Presentation {
 			directory = directoryForCatalog(catalog);
 			discardImages();
 			filenames = null;
+			indexModified = -1;
+			needsListing = true;
 			num = 0;
 			// Reserve the listing before aboutToShow() can start a cache-only load.
-			runLoad(gen, directory, true);
+			runLoad(gen, directory);
 		}
 	}
 
-	private void runLoad(final int gen, final String directory, final boolean fetchListing) {
+	private void runLoad(final int gen, final String directory) {
 		synchronized (images) {
 			if (!active || gen != generation) {
 				return;
@@ -130,7 +147,12 @@ public class PhotoPresentation extends Presentation {
 			@Override
 			public void run() {
 				try {
-					if (fetchListing) {
+					// Keep these checks separate: fetchListing clears needsListing only on success,
+					// so combining them with || would lose retries after an index change.
+					if (updateIndexModified(gen, directory)) {
+						needsListing = true;
+					}
+					if (needsListing) {
 						fetchListing(gen, directory);
 					}
 					fillCache(gen, directory);
@@ -145,6 +167,30 @@ public class PhotoPresentation extends Presentation {
 		});
 	}
 
+	/**
+	 * Updates the stored index timestamp.
+	 *
+	 * @return true if a changed timestamp was stored; false if unchanged, unavailable, or the load is stale
+	 */
+	private boolean updateIndexModified(int gen, String directory) {
+		long modified = -1;
+		try {
+			modified = loader.indexModified(directory);
+		} catch (Exception e) {
+			Trace.trace(Trace.INFO, "Could not check photo index: " + e.getMessage());
+		}
+		synchronized (images) {
+			if (!active || gen != generation) {
+				return false;
+			}
+			if (modified < 0 || modified == indexModified) {
+				return false;
+			}
+			indexModified = modified;
+			return true;
+		}
+	}
+
 	private void fetchListing(int gen, String directory) {
 		String[] names = null;
 		try {
@@ -153,11 +199,17 @@ public class PhotoPresentation extends Presentation {
 			Trace.trace(Trace.ERROR, "Could not load " + directory + " contents: " + e.getMessage());
 		}
 		synchronized (images) {
-			if (!active || gen != generation) {
+			if (!active || gen != generation || names == null) {
 				return;
 			}
+			// Keep current/outgoing photos intact; replace only the preload queue.
+			for (BufferedImage image : images) {
+				image.flush();
+				discardedImages++;
+			}
+			images.clear();
 			filenames = names;
-			num = 0;
+			needsListing = false;
 		}
 	}
 
@@ -228,7 +280,7 @@ public class PhotoPresentation extends Presentation {
 			gen = generation;
 			directory = directoryForCatalog(catalog);
 		}
-		runLoad(gen, directory, false);
+		runLoad(gen, directory);
 		return switched;
 	}
 
