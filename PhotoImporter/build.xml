@@ -10,4 +10,11 @@
       <fileset dir="${contest.model}/lib" includes="*.jar"/>
     </copy>
   </target>
+  <!-- Optional standalone web build; standard distribution integration is a later step. -->
+  <target name="web" depends="jar">
+    <exec executable="pnpm" dir="ui" failonerror="true"><arg value="build"/></exec>
+    <jar destfile="staging/${jar.name}.jar" update="true">
+      <zipfileset dir="ui/build" prefix="photo-ui"/>
+    </jar>
+  </target>
 </project>

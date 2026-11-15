@@ -29,6 +29,8 @@ public final class PhotoSyncService implements AutoCloseable {
 			PhotoSync.Progress progress, int uploaded, int removed, long lastAttempt, long lastSuccess, String error,
 			boolean enabled, boolean periodic, long nextRun, int available) { }
 
+	public record Failure(String photoId, String message) { }
+
 	private static final class Job {
 		final String catalog;
 		final String id;
@@ -48,6 +50,7 @@ public final class PhotoSyncService implements AutoCloseable {
 		int uploaded;
 		int removed;
 		int available = -1;
+		final Map<String, Failure> failures = new LinkedHashMap<>();
 		Run run;
 
 		Job(String catalog, String id) {
@@ -71,6 +74,9 @@ public final class PhotoSyncService implements AutoCloseable {
 
 	private final CDSPhotoClient cds;
 	private final File data;
+	private final File credentialsDirectory;
+	private final Map<String, PhotoSources.Settings> catalogs = new LinkedHashMap<>();
+	private final Map<String, Integer> catalogCounts = new LinkedHashMap<>();
 	private final Map<String, Job> jobs = new LinkedHashMap<>();
 	private final Object pollLock = new Object();
 	// Serialize cache/index writes, including different imports in the same catalog.
@@ -83,8 +89,13 @@ public final class PhotoSyncService implements AutoCloseable {
 	private String error;
 
 	public PhotoSyncService(CDSPhotoClient cds, File data) throws IOException {
+		this(cds, data, data);
+	}
+
+	PhotoSyncService(CDSPhotoClient cds, File data, File credentialsDirectory) throws IOException {
 		this.cds = cds;
 		this.data = data;
+		this.credentialsDirectory = credentialsDirectory;
 		loadState();
 	}
 
@@ -105,7 +116,7 @@ public final class PhotoSyncService implements AutoCloseable {
 			synchronized (this) {
 				checkOpen();
 			}
-			Map<String, String> credentials = PhotoSources.readCredentials(data);
+			Map<String, String> credentials = PhotoSources.readCredentials(credentialsDirectory);
 			List<String> catalogs = cds.catalogs();
 			Set<String> seen = new HashSet<>();
 			Set<String> unavailable = new HashSet<>();
@@ -132,6 +143,10 @@ public final class PhotoSyncService implements AutoCloseable {
 				}
 				synchronized (this) {
 					checkOpen();
+					this.catalogs.put(catalog, settings);
+					if (counts != null) {
+						catalogCounts.put(catalog, counts.values().stream().mapToInt(Integer::intValue).sum());
+					}
 					for (PhotoSources.Source source : settings.sources) {
 						String id = jobId(catalog, source.id);
 						seen.add(id);
@@ -143,6 +158,9 @@ public final class PhotoSyncService implements AutoCloseable {
 						}
 						job.source = source;
 						job.key = key;
+						if (job.refreshSeconds != settings.refreshSeconds) {
+							job.nextRun = 0;
+						}
 						job.refreshSeconds = settings.refreshSeconds;
 						if (counts != null) {
 							job.available = counts.getOrDefault(source.id, 0);
@@ -157,6 +175,8 @@ public final class PhotoSyncService implements AutoCloseable {
 			synchronized (this) {
 				checkOpen();
 				error = failure;
+				this.catalogs.keySet().retainAll(catalogs);
+				catalogCounts.keySet().retainAll(catalogs);
 				for (Map.Entry<String, Job> entry : jobs.entrySet()) {
 					Job job = entry.getValue();
 					if (!seen.contains(entry.getKey()) && !unavailable.contains(job.catalog)) {
@@ -213,6 +233,30 @@ public final class PhotoSyncService implements AutoCloseable {
 							? job.nextRun : 0, job.available));
 		}
 		return List.copyOf(result);
+	}
+
+	public synchronized Map<String, PhotoSources.Settings> catalogs() {
+		return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(catalogs));
+	}
+
+	public synchronized int available(String catalog) {
+		return catalogCounts.getOrDefault(catalog, -1);
+	}
+
+	public synchronized void setResumeOnRestart(String catalog, String importId, boolean resume) throws IOException {
+		Job job = requireJob(catalog, importId);
+		boolean previous = job.resume;
+		job.resume = resume;
+		try {
+			saveState();
+		} catch (IOException e) {
+			job.resume = previous;
+			throw e;
+		}
+	}
+
+	public synchronized List<Failure> failures(String catalog, String importId) throws IOException {
+		return List.copyOf(requireJob(catalog, importId).failures.values());
 	}
 
 	public synchronized String error() {
@@ -313,6 +357,7 @@ public final class PhotoSyncService implements AutoCloseable {
 		job.state = State.QUEUED;
 		job.error = null;
 		job.progress = new PhotoSync.Progress("queued", 0, 0, 0, 0);
+		job.failures.clear();
 		job.uploaded = 0;
 		job.removed = 0;
 		run.future = worker.submit(() -> execute(job, run));
@@ -343,6 +388,9 @@ public final class PhotoSyncService implements AutoCloseable {
 			PhotoSync.Result result = new PhotoSync(() -> System.nanoTime() / 1_000_000, publisher, progress -> {
 				synchronized (this) {
 					job.progress = progress;
+					if (progress.photoId() != null && progress.error() != null) {
+						job.failures.put(progress.photoId(), new Failure(progress.photoId(), progress.error()));
+					}
 				}
 			}, () -> run.cancelled).sync(cache, new File(data, "originals/" + job.catalog), source, job.id,
 					run.source.maxWidth, run.source.maxHeight);

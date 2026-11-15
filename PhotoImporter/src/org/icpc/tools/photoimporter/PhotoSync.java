@@ -38,7 +38,12 @@ public final class PhotoSync {
 	private final BooleanSupplier cancelled;
 
 	/** Immutable progress snapshot, independent of logs and suitable for a UI. */
-	public record Progress(String phase, int processed, int total, int downloaded, int failed) { }
+	public record Progress(String phase, int processed, int total, int downloaded, int failed,
+			String photoId, String error) {
+		public Progress(String phase, int processed, int total, int downloaded, int failed) {
+			this(phase, processed, total, downloaded, failed, null, null);
+		}
+	}
 
 	static void checkCancelled() throws InterruptedIOException {
 		if (Thread.currentThread().isInterrupted()) {
@@ -175,7 +180,7 @@ public final class PhotoSync {
 					continue;
 				}
 				remoteCount++;
-				progress.accept(new Progress("preparing", remoteCount - 1, remote.size(), downloaded, failed));
+				progress.accept(new Progress("preparing", remoteCount - 1, remote.size(), downloaded, failed, photo.getId(), null));
 				PhotoMetadata existing = oursById.get(photo.getId());
 				PhotoMetadata updated = null;
 				try {
@@ -192,6 +197,8 @@ public final class PhotoSync {
 				} catch (IOException e) {
 					checkStopped();
 					failed++;
+					progress.accept(new Progress("preparing", remoteCount, remote.size(), downloaded, failed,
+							photo.getId(), PhotoHttp.redact(e.getMessage())));
 					Trace.trace(Trace.WARNING, "Photo sync " + label + " failed for photo " + photo.getId() + ": "
 							+ PhotoHttp.redact(e.getMessage()));
 					if (existing != null) {
