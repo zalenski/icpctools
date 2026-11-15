@@ -336,6 +336,45 @@ public class PhotoSyncTest {
 		}
 	}
 
+	@Test
+	public void cancellationCheckpointsCompletedPhotosAndKeepsUnvisitedPhotos() throws Exception {
+		File display = Files.createTempDirectory("photo-cancel-display").toFile();
+		File originals = Files.createTempDirectory("photo-cancel-originals").toFile();
+		try {
+			MemorySource source = new MemorySource("flickr://album/42");
+			source.add("old", "old", null, null, "https://example/old.png", png(10, 10));
+			new PhotoSync().sync(display, originals, source, "test", null, null, 10L);
+			PhotoMetadata old = PhotoMetadata.readIndex(display).get(0);
+			source.photos.clear();
+			source.add("new", "new", null, null, "https://example/new.png", png(10, 10));
+			source.add("later", "later", null, null, "https://example/later.png", png(10, 10));
+			source.beforeFetch = () -> {
+				if (source.fetches == 3) {
+					Thread.currentThread().interrupt();
+				}
+			};
+			boolean[] completed = { false };
+			try {
+				new PhotoSync(() -> 0L, (photos, complete) -> completed[0] |= complete)
+						.sync(display, originals, source, "test", null, null, 20L);
+				org.junit.Assert.fail("Expected cancellation");
+			} catch (java.io.InterruptedIOException expected) {
+				assertTrue(Thread.currentThread().isInterrupted());
+			} finally {
+				Thread.interrupted();
+			}
+			List<PhotoMetadata> saved = PhotoMetadata.readIndex(display);
+			assertEquals(2, saved.size());
+			assertTrue(saved.stream().anyMatch(photo -> "new".equals(photo.getPhotoId())));
+			assertTrue(new File(display, old.getFile()).isFile());
+			assertFalse(completed[0]);
+			assertEquals(0, originals.listFiles((folder, name) -> name.endsWith(".tmp")).length);
+		} finally {
+			deleteTree(display);
+			deleteTree(originals);
+		}
+	}
+
 	private static List<String> filenames(List<PhotoMetadata> metas) {
 		List<String> names = new ArrayList<>();
 		for (PhotoMetadata meta : metas) {

@@ -20,7 +20,7 @@ https://localhost:8443 admin PASSWORD --data /path/to/photo-importer --once --in
 
 URL, user and password are positional arguments, using the same `ArgumentParser`
 as the other clients. `--insecure-cds` accepts a self-signed certificate for the target CDS only;
-omit it for a trusted certificate. Omit `--once` to poll enabled imports continuously.
+omit it for a trusted certificate. `--once` explicitly runs all enabled imports once.
 CDS must be rebuilt with the photo API before using the importer.
 
 For a private CA, Java also accepts a truststore through VM options:
@@ -36,7 +36,7 @@ requests follow redirects except HTTPS-to-HTTP; authenticated CDS requests do no
 
 The same main class runs from the CLI with classpath `PhotoImporter/staging/*`.
 The data directory contains `credentials.json` (named Flickr profiles), `originals/`
-and `cache/`, separated by catalog. The cache holds display copies and a resume
+and `cache/`, separated by catalog, plus importer-owned `state.json`. The cache holds display copies and a resume
 index, allowing upload retries without downloading or resizing again.
 
 Definitions remain on CDS in each catalog's `photo-sources.json`. Use
@@ -44,6 +44,38 @@ Definitions remain on CDS in each catalog's `photo-sources.json`. Use
 through the API before syncing. Source URIs support Flickr albums and `file:` URLs
 for a local file or folder. Local sources need no credential profile. Import IDs
 use letters, digits, underscores and hyphens. Originals always stay on the importer.
+
+## Jobs (CLI and future UI)
+
+A new importer discovers definitions without automatically taking over their jobs.
+For continuous sync, explicitly select jobs; repeat `--start` for several imports:
+
+```text
+https://localhost:8443 admin PASSWORD --data /path/to/photo-importer --start photos-teams/team-photos --resume-on-restart --insecure-cds
+```
+
+`--resume-on-restart` opts those jobs into automatic restart. Without it, their
+selection is saved but they remain stopped after restarting the importer. Other
+enabled CDS definitions remain available to select. Source `enabled` must also be
+true. Ctrl+C stops current work; restart preferences are retained.
+
+`PhotoSyncService` exposes `poll()`, `status()`, `start(catalog, id, resumeOnRestart)`,
+`stop(catalog, id)`, `retry(catalog, id)` and `close()` for the later web UI. Status
+snapshots contain the phase, counts, errors and last successful run. Polling reloads
+definitions and credentials without waiting for imports. Imports share one worker
+to serialize local catalog-index writes. Changed definitions/keys cancel the old
+run before its replacement; disabled or removed definitions stop importing.
+
+Job selections, restart preferences and last-success times are written atomically
+to `state.json`, bound to the target CDS URL. Use a separate data directory for a
+different target. Secrets remain in `credentials.json`; definitions stay on CDS.
+
+Stop interrupts pending HTTP and checks cancellation between other operations.
+Image decoding/scaling may finish before stopping. Completed photos remain usable;
+cancellation checkpoints completed local work and never prunes unvisited photos.
+An upload already received by CDS may finish even after the job stops. Retry reuses
+local originals and prepared images. A stopped job is not automatically retried;
+selected active jobs continue polling after ordinary failures.
 
 ## CDS API
 

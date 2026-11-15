@@ -54,6 +54,10 @@ public final class CDSPhotoClient {
 		}
 	}
 
+	public URI target() {
+		return URI.create(base.toString().replaceAll("/+$", ""));
+	}
+
 	public List<String> catalogs() throws IOException {
 		JsonObject response = get("/catalogs");
 		List<String> catalogs = new ArrayList<>();

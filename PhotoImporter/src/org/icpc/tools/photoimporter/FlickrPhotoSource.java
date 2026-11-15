@@ -88,6 +88,7 @@ public final class FlickrPhotoSource implements PhotoSource {
 		int page = 1;
 		int pages = 1;
 		while (page <= pages && page <= MAX_PAGES) {
+			PhotoSync.checkCancelled();
 			String body;
 			try {
 				body = PhotoHttp.get(buildUrl(page));

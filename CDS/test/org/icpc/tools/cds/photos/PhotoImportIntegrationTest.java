@@ -42,7 +42,9 @@ public class PhotoImportIntegrationTest {
 			File display = new File(config, "present/photos-test");
 			File manual = new File(display, "manual.jpg");
 			Files.writeString(manual.toPath(), "manual");
-			new PhotoSyncService(client, data).tick();
+			try (PhotoSyncService service = new PhotoSyncService(client, data)) {
+				service.tick();
+			}
 			List<PhotoMetadata> records = client.index("photos-test");
 			assertEquals(2, records.size());
 			for (PhotoMetadata metadata : records) {
@@ -54,7 +56,9 @@ public class PhotoImportIntegrationTest {
 			assertFalse(new File(config, "present/original-photos").exists());
 			assertFalse(new File(config, "originals").exists());
 			byte[] index = Files.readAllBytes(new File(display, PhotoMetadata.INDEX_NAME).toPath());
-			new PhotoSyncService(client, data).tick();
+			try (PhotoSyncService service = new PhotoSyncService(client, data)) {
+				service.tick();
+			}
 			assertTrue(Arrays.equals(index, Files.readAllBytes(new File(display, PhotoMetadata.INDEX_NAME).toPath())));
 			assertEquals(5, display.list().length); // Two photos, definitions, index and an untouched manual photo.
 		} finally {
@@ -74,7 +78,9 @@ public class PhotoImportIntegrationTest {
 			CDSPhotoClient client = new CDSPhotoClient(server.uri(), "admin", "password", false);
 			client.sources("photos-one", definition(source));
 			client.sources("photos-two", definition(source));
-			new PhotoSyncService(client, data).tick();
+			try (PhotoSyncService service = new PhotoSyncService(client, data)) {
+				service.tick();
+			}
 			assertEquals(1, client.index("photos-one").size());
 			assertEquals(1, client.index("photos-two").size());
 			assertTrue(new File(data, "originals/photos-one").isDirectory());
@@ -82,16 +88,22 @@ public class PhotoImportIntegrationTest {
 
 			JsonObject updated = definition(source, 10);
 			client.sources("photos-one", updated);
-			new PhotoSyncService(client, data).tick();
+			try (PhotoSyncService service = new PhotoSyncService(client, data)) {
+				service.tick();
+			}
 			assertEquals(10, client.index("photos-one").get(0).getWidth());
 			assertEquals(20, client.index("photos-two").get(0).getWidth());
 
 			File moved = new File(work, "moved");
 			assertTrue(source.renameTo(moved));
-			new PhotoSyncService(client, data).tick();
+			try (PhotoSyncService service = new PhotoSyncService(client, data)) {
+				service.tick();
+			}
 			assertEquals(1, client.index("photos-one").size());
 			assertTrue(source.mkdirs());
-			new PhotoSyncService(client, data).tick();
+			try (PhotoSyncService service = new PhotoSyncService(client, data)) {
+				service.tick();
+			}
 			assertTrue(client.index("photos-one").isEmpty());
 			assertTrue(client.index("photos-two").isEmpty());
 		} finally {
