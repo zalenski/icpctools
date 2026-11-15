@@ -206,7 +206,7 @@ public class PhotoJobLifecycleTest {
 				assertFalse(status(service).selected());
 				release.countDown();
 				assertEquals(1, client.index("photos-test").size());
-				assertEquals(1, work.resolve("data/originals/photos-test").toFile().list().length);
+				assertFalse(work.resolve("data/originals/photos-test").toFile().exists());
 			}
 		} finally {
 			release.countDown();

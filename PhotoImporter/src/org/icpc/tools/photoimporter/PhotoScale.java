@@ -14,6 +14,7 @@ import java.util.Locale;
 
 import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
+import javax.imageio.IIOException;
 import javax.imageio.ImageWriteParam;
 import javax.imageio.ImageWriter;
 import javax.imageio.stream.ImageOutputStream;
@@ -24,6 +25,14 @@ import javax.imageio.stream.ImageOutputStream;
  */
 public final class PhotoScale {
 	static final float JPEG_QUALITY = 0.9f;
+
+	static final class InvalidImageException extends IOException {
+		private static final long serialVersionUID = 1L;
+
+		InvalidImageException(String message, Throwable cause) {
+			super(message, cause);
+		}
+	}
 
 	public static final class Size {
 		public final int width;
@@ -39,9 +48,14 @@ public final class PhotoScale {
 		public final int width;
 		public final int height;
 
-		public Written(int width, int height) {
+		public final int originalWidth;
+		public final int originalHeight;
+
+		public Written(int width, int height, int originalWidth, int originalHeight) {
 			this.width = width;
 			this.height = height;
+			this.originalWidth = originalWidth;
+			this.originalHeight = originalHeight;
 		}
 	}
 
@@ -92,29 +106,30 @@ public final class PhotoScale {
 
 	/**
 	 * Writes {@code displayFile} from {@code originalFile}. A copy that needs no scaling is the
-	 * original bytes. Otherwise the image is scaled and encoded again: PNG stays PNG, and other
-	 * photos are written as JPEG.
+	 * original bytes. Otherwise the image is scaled and encoded again: PNG stays PNG, GIF stays
+	 * GIF, and other photos are written as JPEG.
 	 */
 	public static Written writeDisplay(File originalFile, File displayFile, Integer maxWidth, Integer maxHeight)
 			throws IOException {
-		BufferedImage image = ImageIO.read(originalFile);
+		BufferedImage image;
+		try {
+			image = ImageIO.read(originalFile);
+		} catch (IIOException e) {
+			throw new InvalidImageException("Could not decode photo " + originalFile.getName(), e);
+		}
 		if (image == null) {
-			if (isLimit(maxWidth) || isLimit(maxHeight)) {
-				throw new IOException("Could not read photo " + originalFile.getName());
-			}
-			copyFile(originalFile, displayFile);
-			return new Written(0, 0);
+			throw new InvalidImageException("Could not decode photo " + originalFile.getName(), null);
 		}
 		try {
 			Size size = fit(image.getWidth(), image.getHeight(), maxWidth, maxHeight);
 			if (size.width == image.getWidth() && size.height == image.getHeight()) {
 				copyFile(originalFile, displayFile);
-				return new Written(size.width, size.height);
+				return new Written(size.width, size.height, image.getWidth(), image.getHeight());
 			}
 			BufferedImage scaled = scale(image, size.width, size.height);
 			try {
 				writeEncoded(scaled, displayFile);
-				return new Written(scaled.getWidth(), scaled.getHeight());
+				return new Written(scaled.getWidth(), scaled.getHeight(), image.getWidth(), image.getHeight());
 			} finally {
 				if (scaled != image) {
 					scaled.flush();

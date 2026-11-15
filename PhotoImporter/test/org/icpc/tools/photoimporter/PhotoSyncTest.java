@@ -52,7 +52,7 @@ public class PhotoSyncTest {
 
 			MemorySource source = new MemorySource("flickr://album/42");
 			source.add("1", "Say \"hi\"", "Lidia Example", "4", "https://live.staticflickr.com/1/x.jpg",
-					"downloaded".getBytes(StandardCharsets.UTF_8));
+					png(10, 10));
 
 			PhotoSync.Result result = new PhotoSync().sync(display, originals, source, null, null, 1700000000000L);
 			assertEquals(1, result.downloaded);
@@ -66,8 +66,8 @@ public class PhotoSyncTest {
 			assertEquals("keep", read(new File(originals, "keep.jpg")));
 
 			String created = "flickr-album_42-1-2.jpg";
-			assertEquals("downloaded", read(new File(display, created)));
-			assertEquals("downloaded", read(new File(originals, created)));
+			org.junit.Assert.assertArrayEquals(png(10, 10), Files.readAllBytes(new File(display, created).toPath()));
+			org.junit.Assert.assertArrayEquals(png(10, 10), Files.readAllBytes(new File(originals, created).toPath()));
 			PhotoMetadata record = PhotoMetadata.readIndex(display).get(1);
 			assertEquals("flickr://album/42", record.getSourceUri());
 			assertEquals("1", record.getPhotoId());
@@ -87,8 +87,8 @@ public class PhotoSyncTest {
 			assertEquals(0, again.removed);
 			assertEquals(1, source.fetches);
 			assertEquals("do-not-touch", read(new File(display, blocked)));
-			assertEquals("downloaded", read(new File(display, created)));
-			assertEquals("downloaded", read(new File(originals, created)));
+			org.junit.Assert.assertArrayEquals(png(10, 10), Files.readAllBytes(new File(display, created).toPath()));
+			org.junit.Assert.assertArrayEquals(png(10, 10), Files.readAllBytes(new File(originals, created).toPath()));
 
 			source.photos.clear();
 			PhotoSync.Result removed = new PhotoSync().sync(display, originals, source, null, null, 1700000001000L);
@@ -117,7 +117,7 @@ public class PhotoSyncTest {
 			write(new File(display, "manual.jpg"), "manual");
 			MemorySource source = new MemorySource("flickr://album/42");
 			source.add("7", "Kept", "Owner", "1", "https://live.staticflickr.com/7.jpg",
-					"pixels".getBytes(StandardCharsets.UTF_8));
+					png(10, 10));
 			new PhotoSync().sync(display, originals, source, null, null, 20L);
 			String name = PhotoSync.imageFileName("flickr", "flickr://album/42", "7",
 					"https://live.staticflickr.com/7.jpg");
@@ -132,8 +132,8 @@ public class PhotoSyncTest {
 				assertEquals("offline", e.getMessage());
 			}
 			assertEquals("manual", read(new File(display, "manual.jpg")));
-			assertEquals("pixels", read(new File(display, name)));
-			assertEquals("pixels", read(new File(originals, name)));
+			org.junit.Assert.assertArrayEquals(png(10, 10), Files.readAllBytes(new File(display, name).toPath()));
+			org.junit.Assert.assertArrayEquals(png(10, 10), Files.readAllBytes(new File(originals, name).toPath()));
 			assertEquals(1, PhotoMetadata.readIndex(display).size());
 		} finally {
 			deleteTree(display);
@@ -189,7 +189,7 @@ public class PhotoSyncTest {
 		try {
 			MemorySource source = new MemorySource("flickr://album/42");
 			source.add("1", "Shared", "Owner", "4", "https://example.test/1.jpg",
-					"pixels".getBytes(StandardCharsets.UTF_8));
+					png(10, 10));
 			PhotoSync sync = new PhotoSync();
 			sync.sync(display, originals, source, "first", null, null, 10L);
 			sync.sync(display, originals, source, "second", null, null, 20L);
@@ -221,21 +221,21 @@ public class PhotoSyncTest {
 		try {
 			MemorySource source = new MemorySource("flickr://album/42");
 			source.add("1", "First", "Owner", "4", "https://example.test/1.jpg",
-					"pixels".getBytes(StandardCharsets.UTF_8));
+					png(10, 10));
 			PhotoSync sync = new PhotoSync();
 			sync.sync(display, originals, source, "teams", null, null, 10L);
 			source.photos.clear();
 			source.add("1", "Updated", "Owner", "4", "https://example.test/changed.jpg", null);
 			source.add("2", "Second", "Owner", "4", "https://example.test/2.jpg",
-					"new pixels".getBytes(StandardCharsets.UTF_8));
+					png(20, 10));
 			PhotoSync.Result result = sync.sync(display, originals, source, "teams", null, null, 20L);
 			assertEquals(1, result.downloaded);
 			assertEquals(0, result.removed);
 			assertEquals(1, result.failed);
 			List<PhotoMetadata> records = PhotoMetadata.readIndex(display);
 			assertEquals(2, records.size());
-			assertEquals("pixels", read(new File(display, records.get(0).getFile())));
-			assertEquals("new pixels", read(new File(display, records.get(1).getFile())));
+			org.junit.Assert.assertArrayEquals(png(10, 10), Files.readAllBytes(new File(display, records.get(0).getFile()).toPath()));
+			org.junit.Assert.assertArrayEquals(png(20, 10), Files.readAllBytes(new File(display, records.get(1).getFile()).toPath()));
 			assertEquals("teams", records.get(0).getImportId());
 			assertEquals("teams", records.get(1).getImportId());
 		} finally {
@@ -259,7 +259,7 @@ public class PhotoSyncTest {
 			MemorySource source = new MemorySource("flickr://album/42");
 			for (int i = 1; i <= 3; i++) {
 				source.add(Integer.toString(i), "New", "Owner", "4", "https://example.test/" + i + ".jpg",
-						"pixels".getBytes(StandardCharsets.UTF_8));
+						png(10, 10));
 			}
 			AtomicLong clock = new AtomicLong();
 			source.beforeFetch = () -> {
@@ -312,7 +312,7 @@ public class PhotoSyncTest {
 		try {
 			MemorySource source = new MemorySource("flickr://album/42");
 			source.add("1", "Photo", "Owner", "4", "https://example.test/1.jpg",
-					"pixels".getBytes(StandardCharsets.UTF_8));
+					png(10, 10));
 			source.beforeFetch = () -> {
 				try {
 					assertTrue(new File(display, PhotoMetadata.INDEX_NAME).isFile());

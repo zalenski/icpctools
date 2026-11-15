@@ -43,7 +43,42 @@ Definitions remain on CDS in each catalog's `photo-sources.json`. Use
 `--catalog photos-teams --sources /path/to/photo-sources.json` to install a file
 through the API before syncing. Source URIs support Flickr albums and `file:` URLs
 for a local file or folder. Local sources need no credential profile. Import IDs
-use letters, digits, underscores and hyphens. Originals always stay on the importer.
+use letters, digits, underscores and hyphens. Downloaded originals stay on the importer;
+local sources are read directly from their configured paths.
+
+## Local files
+
+Use a `file:` URI as the source, pointing to a file or directory on the importer
+machine. Directories are scanned recursively at the configured refresh interval;
+no source credentials are needed. For example:
+
+```json
+{"refreshSeconds":30,"sources":[{"id":"local","source":"file:///path/to/photos/","enabled":true,"maxWidth":1920}]}
+```
+
+The importer reads originals directly through `PhotoScale`, without copying them
+to `originals/`. Decoding must succeed even without size limits. A new display
+copy replaces the previous one only after decoding and checking that the source
+did not change during reading. Unstable files are retried on the next scan.
+
+`cache/<catalog>/local-index-<import-id>.json` records relative paths, sizes,
+modification times and processing results. Unchanged valid and invalid files
+avoid repeated decoding across restarts. Transient failures are retried; changed
+limits regenerate display copies only if the resulting dimensions change. Original
+dimensions are stored in the scan index; existing display dimensions come from
+`photos-index.json`. If they still match the new size decision, decoding, copying
+and image upload are skipped and only metadata is updated. Older scan entries
+without original dimensions are processed once to populate them.
+Unsupported/non-image files are recorded as
+invalid and ignored; a corrupt replacement of an imported photo reports a failure
+and preserves its last good copy. JSON and TMP files are skipped.
+
+This scan index is importer-local and stores no photo ownership or display
+filenames; `photos-index.json` remains authoritative for imported images. Both
+files are saved atomically. Missing photos are pruned only after a complete scan,
+and only for this import. An unavailable source directory never means an empty
+catalog. Existing original copies from older importer versions are no longer
+needed for local sources; no new copies are made.
 
 ## Jobs (CLI and future UI)
 
@@ -87,6 +122,9 @@ HTTP, even when importer and CDS run on the same host.
 - `GET /api/photos/catalogs/{catalog}/index`: stored photo metadata.
 - `POST /api/photos/catalogs/{catalog}/imports/{id}/photos`: multipart `metadata`
   JSON and `photo` bytes; returns stored metadata, including the allocated filename.
+- `PUT /api/photos/catalogs/{catalog}/imports/{id}/photos`: JSON metadata update
+  for an unchanged image; preserves its bytes and allocated filename. Returns 404
+  if the photo/file is missing, allowing the importer to fall back to uploading it.
 - `DELETE /api/photos/catalogs/{catalog}/imports/{id}/photos?photoId=…`: delete one
   indexed photo belonging to that import.
 
