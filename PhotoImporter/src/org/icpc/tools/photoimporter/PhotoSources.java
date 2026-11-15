@@ -114,6 +114,38 @@ public final class PhotoSources {
 		return new Settings(refresh, sources);
 	}
 
+	/** Replace one activation flag while preserving other source and catalog settings. */
+	public static JsonObject withEnabled(JsonObject definitions, String importId, boolean enabled) throws IOException {
+		parse(definitions);
+		Object[] sources = definitions.getArray("sources").clone();
+		boolean found = false;
+		for (int i = 0; i < sources.length; i++) {
+			JsonObject source = (JsonObject) sources[i];
+			if (importId.equals(source.getString("id"))) {
+				JsonObject updated = copyExcept(source, "enabled");
+				updated.put("enabled", enabled);
+				sources[i] = updated;
+				found = true;
+			}
+		}
+		if (!found) {
+			throw new IOException("Unknown photo import");
+		}
+		JsonObject updated = copyExcept(definitions, "sources");
+		updated.put("sources", sources);
+		return updated;
+	}
+
+	static JsonObject copyExcept(JsonObject object, String excluded) {
+		JsonObject result = new JsonObject();
+		for (String key : object.props.keySet()) {
+			if (!excluded.equals(key)) {
+				result.put(key, object.props.get(key));
+			}
+		}
+		return result;
+	}
+
 	public static Map<String, String> readCredentials(File configFolder) throws IOException {
 		File file = new File(configFolder, CREDENTIALS_FILE);
 		if (!file.isFile()) {

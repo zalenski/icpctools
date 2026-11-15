@@ -260,6 +260,7 @@ public class PhotoJobLifecycleTest {
 				service.poll();
 				service.start("photos-test", "first", false);
 				assertTrue(entered.await(5, TimeUnit.SECONDS));
+				assertFalse(service.runNow("photos-test", "first"));
 				service.start("photos-test", "second", false);
 				assertEquals(State.QUEUED, service.status().get(1).state());
 				service.stop("photos-test", "second");
@@ -304,6 +305,40 @@ public class PhotoJobLifecycleTest {
 		entry.put("credentialProfile", "flickr/default");
 		entry.put("enabled", true);
 		return entry;
+	}
+
+	@Test
+	public void runNowDoesNotEnablePeriodicWorkAndActivationIsSavedOnCds() throws Exception {
+		Path work = Files.createTempDirectory("photo-job-ui-controls");
+		try (PhotoApiTestServer server = new PhotoApiTestServer(work.resolve("cds").toFile())) {
+			CDSPhotoClient client = client(server);
+			client.sources("photos-test", definition(image(work.resolve("input.png")), false, 20));
+			File data = work.resolve("data").toFile();
+			try (PhotoSyncService service = new PhotoSyncService(client, data)) {
+				service.poll();
+				assertFalse(status(service).enabled());
+				assertEquals(0, status(service).available());
+				assertTrue(service.runNow("photos-test", "test"));
+				await(() -> status(service).state() == State.SUCCEEDED);
+				assertEquals(1, status(service).available());
+				assertFalse(status(service).selected());
+				assertFalse(status(service).periodic());
+				assertEquals(0, status(service).nextRun());
+				assertFalse(((JsonObject) client.sources("photos-test").getArray("sources")[0]).getBoolean("enabled"));
+				service.setEnabled("photos-test", "test", true);
+				service.start("photos-test", "test", false);
+				await(() -> status(service).state() == State.SUCCEEDED);
+				assertTrue(status(service).nextRun() > System.currentTimeMillis());
+				assertTrue(status(service).periodic());
+				assertTrue(((JsonObject) client.sources("photos-test").getArray("sources")[0]).getBoolean("enabled"));
+				service.setEnabled("photos-test", "test", false);
+				assertEquals(State.DISABLED, status(service).state());
+				assertEquals(0, status(service).nextRun());
+				assertEquals(1, client.index("photos-test").size());
+			}
+		} finally {
+			delete(work);
+		}
 	}
 
 	private static CDSPhotoClient client(PhotoApiTestServer server) throws IOException {

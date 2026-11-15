@@ -26,7 +26,8 @@ public final class PhotoSyncService implements AutoCloseable {
 
 	/** Immutable UI snapshot. No source credentials are exposed or persisted here. */
 	public record Status(String catalog, String importId, State state, boolean selected, boolean resumeOnRestart,
-			PhotoSync.Progress progress, int uploaded, int removed, long lastAttempt, long lastSuccess, String error) { }
+			PhotoSync.Progress progress, int uploaded, int removed, long lastAttempt, long lastSuccess, String error,
+			boolean enabled, boolean periodic, long nextRun, int available) { }
 
 	private static final class Job {
 		final String catalog;
@@ -46,6 +47,7 @@ public final class PhotoSyncService implements AutoCloseable {
 		PhotoSync.Progress progress = new PhotoSync.Progress("idle", 0, 0, 0, 0);
 		int uploaded;
 		int removed;
+		int available = -1;
 		Run run;
 
 		Job(String catalog, String id) {
@@ -118,6 +120,16 @@ public final class PhotoSyncService implements AutoCloseable {
 					failure = "Could not read definitions for " + catalog + ": " + PhotoHttp.redact(e.getMessage());
 					continue;
 				}
+				Map<String, Integer> counts = null;
+				try {
+					counts = new LinkedHashMap<>();
+					for (PhotoMetadata photo : cds.index(catalog)) {
+						counts.merge(photo.getImportId(), 1, Integer::sum);
+					}
+				} catch (IOException e) {
+					counts = null;
+					failure = "Could not read photo counts for " + catalog + ": " + PhotoHttp.redact(e.getMessage());
+				}
 				synchronized (this) {
 					checkOpen();
 					for (PhotoSources.Source source : settings.sources) {
@@ -132,6 +144,9 @@ public final class PhotoSyncService implements AutoCloseable {
 						job.source = source;
 						job.key = key;
 						job.refreshSeconds = settings.refreshSeconds;
+						if (counts != null) {
+							job.available = counts.getOrDefault(source.id, 0);
+						}
 						job.configError = !source.uri.startsWith("file:") && key == null
 								? (source.credentialProfile == null ? "No credential profile configured"
 										: "Missing credential profile: " + source.credentialProfile) : null;
@@ -192,13 +207,48 @@ public final class PhotoSyncService implements AutoCloseable {
 		for (Job job : jobs.values()) {
 			result.add(new Status(job.catalog, job.id, job.state, job.selected, job.resume, job.progress,
 					job.uploaded, job.removed, job.lastAttempt, job.lastSuccess,
-					job.configError == null ? job.error : job.configError));
+					job.configError == null ? job.error : job.configError,
+					job.source != null && job.source.enabled, job.active,
+					job.active && job.source != null && job.source.enabled && job.configError == null && job.run == null
+							? job.nextRun : 0, job.available));
 		}
 		return List.copyOf(result);
 	}
 
 	public synchronized String error() {
 		return error;
+	}
+
+	/** Run one cycle without changing periodic selection, activation or restart preferences. */
+	public synchronized boolean runNow(String catalog, String importId) throws IOException {
+		Job job = requireJob(catalog, importId);
+		if (job.source == null) {
+			throw new IOException("Import definition is no longer available");
+		}
+		if (job.configError != null) {
+			throw new IOException(job.configError);
+		}
+		if (job.run != null) {
+			return false;
+		}
+		submit(job);
+		return true;
+	}
+
+	/** Save shared activation on CDS, then reconcile this importer's jobs. */
+	public void setEnabled(String catalog, String importId, boolean enabled) throws IOException {
+		synchronized (pollLock) {
+			synchronized (this) {
+				requireJob(catalog, importId);
+			}
+			cds.sources(catalog, PhotoSources.withEnabled(cds.sources(catalog), importId, enabled));
+			if (!enabled) {
+				synchronized (this) {
+					cancel(requireJob(catalog, importId));
+				}
+			}
+			poll();
+		}
 	}
 
 	/** Start an explicitly selected job; resumeOnRestart is local to this importer. */
@@ -283,10 +333,11 @@ public final class PhotoSyncService implements AutoCloseable {
 		try {
 			PhotoSource source = PhotoSourceRegistry.create(run.source.uri, run.key, run.source.tag);
 			File cache = new File(data, "cache/" + job.catalog);
-			CatalogPublisher publisher = new CatalogPublisher(cds, job.catalog, job.id, cache, (uploaded, removed) -> {
+			CatalogPublisher publisher = new CatalogPublisher(cds, job.catalog, job.id, cache, update -> {
 				synchronized (this) {
-					job.uploaded = uploaded;
-					job.removed = removed;
+					job.uploaded = update.uploaded();
+					job.removed = update.removed();
+					job.available = update.available();
 				}
 			});
 			PhotoSync.Result result = new PhotoSync(() -> System.nanoTime() / 1_000_000, publisher, progress -> {

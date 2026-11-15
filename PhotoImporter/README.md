@@ -95,8 +95,12 @@ enabled CDS definitions remain available to select. Source `enabled` must also b
 true. Ctrl+C stops current work; restart preferences are retained.
 
 `PhotoSyncService` exposes `poll()`, `status()`, `start(catalog, id, resumeOnRestart)`,
-`stop(catalog, id)`, `retry(catalog, id)` and `close()` for the later web UI. Status
-snapshots contain the phase, counts, errors and last successful run. Polling reloads
+`stop(catalog, id)`, `retry(catalog, id)`, `runNow(catalog, id)`,
+`setEnabled(catalog, id, enabled)` and `close()` for the web UI. `runNow` runs one
+cycle even for an inactive source, without selecting periodic work or changing
+restart preferences. `setEnabled` saves the shared activation flag on CDS.
+Status snapshots include the phase, counts, available photos, errors, last success
+and next scheduled run (zero if not scheduled). Polling reloads
 definitions and credentials without waiting for imports. Imports share one worker
 to serialize local catalog-index writes. Changed definitions/keys cancel the old
 run before its replacement; disabled or removed definitions stop importing.

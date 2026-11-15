@@ -7,7 +7,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 
 import org.icpc.tools.contest.model.photos.PhotoMetadata;
 
@@ -17,17 +17,19 @@ final class CatalogPublisher implements PhotoSync.Publisher {
 	private final String catalog;
 	private final String importId;
 	private final File cache;
-	private final BiConsumer<Integer, Integer> progress;
+	record Progress(int uploaded, int removed, int available) { }
+
+	private final Consumer<Progress> progress;
 	private int uploaded;
 	private int removed;
 	private final Map<String, PhotoMetadata> remote = new HashMap<>();
 
 	CatalogPublisher(CDSPhotoClient cds, String catalog, String importId, File cache) throws IOException {
-		this(cds, catalog, importId, cache, (uploaded, removed) -> { });
+		this(cds, catalog, importId, cache, progress -> { });
 	}
 
 	CatalogPublisher(CDSPhotoClient cds, String catalog, String importId, File cache,
-			BiConsumer<Integer, Integer> progress) throws IOException {
+			Consumer<Progress> progress) throws IOException {
 		this.progress = progress;
 		this.cds = cds;
 		this.catalog = catalog;
@@ -71,7 +73,7 @@ final class CatalogPublisher implements PhotoSync.Publisher {
 					continue;
 				}
 				remote.put(photo.getPhotoId(), cds.upload(catalog, importId, photo, image));
-				progress.accept(++uploaded, removed);
+				progress.accept(new Progress(++uploaded, removed, remote.size()));
 			}
 		}
 		if (complete) {
@@ -80,7 +82,7 @@ final class CatalogPublisher implements PhotoSync.Publisher {
 				if (!present.contains(id)) {
 					cds.delete(catalog, importId, id);
 					remote.remove(id);
-					progress.accept(uploaded, ++removed);
+					progress.accept(new Progress(uploaded, ++removed, remote.size()));
 				}
 			}
 		}
