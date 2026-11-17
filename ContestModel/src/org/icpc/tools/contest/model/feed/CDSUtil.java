@@ -7,6 +7,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
+import java.net.JarURLConnection;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URL;
@@ -20,6 +21,9 @@ import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.Locale;
+import java.util.jar.Attributes;
+import java.util.jar.JarFile;
+import java.util.jar.Manifest;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -174,28 +178,47 @@ public class CDSUtil {
 		}
 	}
 
-	private static String getVersion(String ver) {
-		if (ver == null)
+	private static String versionOrDev(String ver) {
+		if (ver == null) {
 			return "dev";
+		}
 		return ver;
 	}
 
 	private static String getVersion() {
-		Class<?> c = getCallerClass();
-		Package pack = c.getPackage();
-		String spec = pack.getSpecificationVersion();
-		String impl = pack.getImplementationVersion();
-		if (spec == null && impl == null)
-			try {
-				java.util.Properties prop = new java.util.Properties();
-				prop.load(c.getResourceAsStream("/META-INF/MANIFEST.MF"));
-				spec = prop.getProperty("Specification-Version");
-				impl = prop.getProperty("Implementation-Version");
-			} catch (Exception e) {
-				// ignore
-			}
+		return getVersion(getCallerClass());
+	}
 
-		return getVersion(spec) + "." + getVersion(impl);
+	// Manifest of the jar that contains c. A directory load (IDE or Ant bin) is a dev build.
+	static String getVersion(Class<?> c) {
+		if (c == null) {
+			return "dev";
+		}
+		String spec = null;
+		String impl = null;
+		try {
+			String binaryName = c.getName();
+			int dot = binaryName.lastIndexOf('.');
+			URL url = c.getResource(binaryName.substring(dot + 1) + ".class");
+			if (url != null && "jar".equals(url.getProtocol())) {
+				JarURLConnection conn = (JarURLConnection) url.openConnection();
+				conn.setUseCaches(false);
+				try (JarFile jar = conn.getJarFile()) {
+					Manifest manifest = jar.getManifest();
+					if (manifest != null) {
+						Attributes attributes = manifest.getMainAttributes();
+						spec = attributes.getValue(Attributes.Name.SPECIFICATION_VERSION);
+						impl = attributes.getValue(Attributes.Name.IMPLEMENTATION_VERSION);
+					}
+				}
+			}
+		} catch (Exception e) {
+			// ignore
+		}
+		if (spec == null && impl == null) {
+			return "dev";
+		}
+		return versionOrDev(spec) + "." + versionOrDev(impl);
 	}
 
 	private File download(String href) throws IOException {
