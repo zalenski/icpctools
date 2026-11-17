@@ -1,4 +1,5 @@
 **/bin
+**/bin-test
 **/dist
 **/staging
 **/logs
