@@ -327,6 +327,118 @@ public class PhotoPresentationTest {
 	}
 
 	@Test
+	public void decodingDecidesWhichFilesArePhotosExceptKnownSupportFiles() throws Exception {
+		ScriptedLoader loader = new ScriptedLoader();
+		BufferedImage extensionless = loader.add("/presentation/photos", "team", 0xFF0000);
+		BufferedImage otherSuffix = loader.add("/presentation/photos", "team.other", 0x0000FF);
+		loader.names.put("/presentation/photos", new String[] { "photos-index.JSON", "photometa-1.TMP",
+				"unreadable.bin", "team", "team.other" });
+		PhotoPresentation presentation = new PhotoPresentation();
+		presentation.setPhotoLoader(loader);
+		presentation.init();
+
+		waitUntil("photos with arbitrary names", () -> presentation.isShowing(extensionless)
+				&& presentation.getCachedImageCount() > 0 && !presentation.isLoading());
+		assertTrue(loader.attempted.contains("/presentation/photos/team.other"));
+		assertTrue(loader.attempted.contains("/presentation/photos/unreadable.bin"));
+		assertFalse(loader.attempted.contains("/presentation/photos/photos-index.JSON"));
+		assertFalse(loader.attempted.contains("/presentation/photos/photometa-1.TMP"));
+		presentation.aboutToShow();
+		assertTrue(presentation.isShowing(otherSuffix));
+		presentation.dispose();
+	}
+
+	@Test
+	public void unreadableFilesDoNotKeepTheLoaderRunning() throws Exception {
+		ScriptedLoader loader = new ScriptedLoader();
+		loader.names.put("/presentation/photos", new String[] { "notes.txt", "broken.image", "photos-index.json" });
+		PhotoPresentation presentation = new PhotoPresentation();
+		presentation.setPhotoLoader(loader);
+		presentation.init();
+
+		waitUntil("unreadable listing exhausted", () -> !presentation.isLoading());
+		assertEquals(2, loader.attempted.size());
+		assertEquals(0, presentation.getCachedImageCount());
+		presentation.dispose();
+	}
+
+	@Test
+	public void changedIndexRefreshesListingAndPreloadsWithoutInterruptingTheCurrentPhoto() throws Exception {
+		ScriptedLoader loader = new ScriptedLoader();
+		loader.indexTime = 100;
+		BufferedImage oldA = loader.add("/presentation/photos", "old-a.png", 0xFF0000);
+		loader.add("/presentation/photos", "old-b.png", 0x0000FF);
+		PhotoPresentation presentation = new PhotoPresentation();
+		presentation.setPhotoLoader(loader);
+		presentation.init();
+		waitUntil("initial preload", () -> !presentation.isLoading());
+
+		BufferedImage next = loader.add("/presentation/photos", "new.png", 0x00FF00);
+		loader.names.put("/presentation/photos", new String[] { "new.png" });
+		loader.indexTime = 200;
+		presentation.aboutToShow();
+		waitUntil("refreshed preload", () -> !presentation.isLoading() && presentation.isShowing(next));
+		assertEquals(2, loader.listed.size());
+		assertEquals(2, loader.indexChecks);
+		Field current = PhotoPresentation.class.getDeclaredField("current");
+		current.setAccessible(true);
+		assertTrue(((PhotoPresentation.PhotoPan) current.get(presentation)).image == oldA);
+		presentation.dispose();
+	}
+
+	@Test
+	public void catalogsWithoutAnIndexKeepTheirExistingListingBehavior() throws Exception {
+		ScriptedLoader loader = new ScriptedLoader();
+		loader.add("/presentation/photos", "old.png", 0xFF0000);
+		PhotoPresentation presentation = new PhotoPresentation();
+		presentation.setPhotoLoader(loader);
+		presentation.init();
+		waitUntil("initial preload", () -> !presentation.isLoading());
+
+		BufferedImage next = loader.add("/presentation/photos", "new.png", 0x00FF00);
+		loader.names.put("/presentation/photos", new String[] { "new.png" });
+		presentation.aboutToShow();
+		waitUntil("index check without index", () -> !presentation.isLoading());
+		assertEquals(1, loader.listed.size());
+		assertEquals(2, loader.indexChecks);
+		assertFalse(presentation.isShowing(next));
+
+		// An index appearing after the first import also triggers a refresh.
+		loader.indexTime = 100;
+		presentation.aboutToShow();
+		waitUntil("new index", () -> !presentation.isLoading() && presentation.isShowing(next));
+		assertEquals(2, loader.listed.size());
+		presentation.dispose();
+	}
+
+	@Test
+	public void failedListingRefreshKeepsPhotosAndRetriesTheSameIndexVersion() throws Exception {
+		ScriptedLoader loader = new ScriptedLoader();
+		loader.indexTime = 100;
+		BufferedImage old = loader.add("/presentation/photos", "old.png", 0xFF0000);
+		PhotoPresentation presentation = new PhotoPresentation();
+		presentation.setPhotoLoader(loader);
+		presentation.init();
+		waitUntil("initial preload", () -> !presentation.isLoading());
+
+		BufferedImage next = loader.add("/presentation/photos", "new.png", 0x00FF00);
+		loader.names.put("/presentation/photos", new String[] { "new.png" });
+		loader.indexTime = 200;
+		loader.failList = true;
+		presentation.aboutToShow();
+		waitUntil("failed refresh", () -> !presentation.isLoading());
+		assertTrue(presentation.isShowing(old));
+		assertEquals(2, loader.listed.size());
+
+		loader.failList = false;
+		presentation.aboutToShow();
+		waitUntil("retried refresh", () -> !presentation.isLoading() && presentation.isShowing(next));
+		assertEquals(3, loader.listed.size());
+		presentation.dispose();
+	}
+
+
+	@Test
 	public void catalogListingIsReservedBeforeARepeatCanStartAnotherLoad() throws Exception {
 		ScriptedLoader loader = new ScriptedLoader();
 		BufferedImage first = loader.add("/presentation/photos", "a.png", 0xFF0000);
@@ -482,6 +594,10 @@ public class PhotoPresentationTest {
 		final Map<String, BufferedImage> images = new HashMap<>();
 		final List<String> listed = new ArrayList<>();
 		final List<Opened> opened = new ArrayList<>();
+		final List<String> attempted = java.util.Collections.synchronizedList(new ArrayList<>());
+		volatile long indexTime = -1;
+		volatile boolean failList;
+		int indexChecks;
 		volatile String blockOpenPrefix;
 		volatile String blockListDirectory;
 		final CountDownLatch openEntered = new CountDownLatch(1);
@@ -505,9 +621,18 @@ public class PhotoPresentationTest {
 		}
 
 		@Override
+		public long indexModified(String directory) {
+			indexChecks++;
+			return indexTime;
+		}
+
+		@Override
 		public String[] list(String directory) throws Exception {
 			synchronized (listed) {
 				listed.add(directory);
+			}
+			if (failList) {
+				throw new java.io.IOException("offline");
 			}
 			if (directory.equals(blockListDirectory)) {
 				listEntered.countDown();
@@ -521,6 +646,7 @@ public class PhotoPresentationTest {
 
 		@Override
 		public BufferedImage open(String path) throws Exception {
+			attempted.add(path);
 			BufferedImage image = images.get(path);
 			if (image == null) {
 				throw new IllegalStateException("no image for " + path);

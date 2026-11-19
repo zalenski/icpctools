@@ -379,3 +379,4 @@ Photos uses `CDP/present/photos/` when no catalog property is set. Apply a prope
 - `h` and `l` still select bicubic and nearest-neighbor interpolation and can be combined with a catalog by applying them separately.
 - `duration:12000` and `fade:1000` control timing independently of the catalog. Fade is off by default.
 - Switching catalogs clears both fading photos and the cache; the new catalog starts without fading from the old one.
+- If `photos-index.json` exists, background preloading checks its modification time on each photo change. A changed index refreshes the listing and preload queue while keeping the current fade intact. Catalogs without an index retain their existing behavior.
