@@ -1061,6 +1061,10 @@ public class BalloonUtility {
 	}
 
 	protected static void showHelp() {
+		showHelp(false);
+	}
+
+	protected static void showHelp(boolean all) {
 		System.out.println("Usage: balloon.bat/sh [options]");
 		System.out.println("   or: balloon.bat/sh contestURL user password [options]");
 		System.out.println("   or: balloon.bat/sh contestPath [options]");
@@ -1068,8 +1072,12 @@ public class BalloonUtility {
 		System.out.println("  Options:");
 		System.out.println("     --clean");
 		System.out.println("         Removes all saved balloon data");
-		System.out.println("     --help");
-		System.out.println("         Shows this message");
+		if (all) {
+			System.out.println("     --dev");
+			System.out.println("         Skip automatic updates from the CDS during development");
+		}
+		System.out.println("     --help, --help-all");
+		System.out.println("         Shows this message (--help-all includes development options)");
 		System.out.println("     --version");
 		System.out.println("         Displays version information");
 	}
@@ -1077,9 +1085,14 @@ public class BalloonUtility {
 	public static void main(String[] args) {
 		Trace.init("ICPC Balloon Utility", "balloon", args);
 
+		boolean[] devMode = new boolean[1];
 		ContestSource contestSource = ArgumentParser.parse(args, new OptionParser() {
 			@Override
 			public boolean setOption(String option, List<Object> options) throws IllegalArgumentException {
+				if ("--dev".equals(option)) {
+					devMode[0] = true;
+					return true;
+				}
 				if ("--clean".equals(option)) {
 					BalloonFileUtil.cleanAll();
 					return true;
@@ -1090,6 +1103,11 @@ public class BalloonUtility {
 			@Override
 			public void showHelp() {
 				BalloonUtility.showHelp();
+			}
+
+			@Override
+			public void showHelp(boolean all) {
+				BalloonUtility.showHelp(all);
 			}
 		});
 
@@ -1125,8 +1143,9 @@ public class BalloonUtility {
 		contestSource.outputValidation();
 		if (contestSource instanceof RESTContestSource) {
 			RESTContestSource restSource = (RESTContestSource) contestSource;
-			if (ContestAPIHelper.isCDS())
+			if (!devMode[0] && ContestAPIHelper.isCDS()) {
 				restSource.checkForUpdates("balloonUtil-");
+			}
 		}
 
 		BalloonUtility ui = new BalloonUtility();

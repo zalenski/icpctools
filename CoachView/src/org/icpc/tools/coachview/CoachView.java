@@ -925,6 +925,10 @@ public class CoachView extends Panel {
 	}
 
 	protected static void showHelp() {
+		showHelp(false);
+	}
+
+	protected static void showHelp(boolean all) {
 		System.out.println("Usage: coachView.bat/sh contestURL user password [options]");
 		System.out.println();
 		System.out.println("  Options:");
@@ -933,8 +937,12 @@ public class CoachView extends Panel {
 		System.out.println("         1 = primary display, 2 = secondary display, etc.");
 		System.out.println("     --light");
 		System.out.println("         Use light mode");
-		System.out.println("     --help");
-		System.out.println("         Shows this message");
+		if (all) {
+			System.out.println("     --dev");
+			System.out.println("         Skip automatic updates from the CDS during development");
+		}
+		System.out.println("     --help, --help-all");
+		System.out.println("         Shows this message (--help-all includes development options)");
 		System.out.println("     --version");
 		System.out.println("         Displays version information");
 	}
@@ -944,9 +952,14 @@ public class CoachView extends Panel {
 
 		String[] displayStr2 = new String[1];
 		// boolean[] lightMode = new boolean[1];
+		boolean[] devMode = new boolean[1];
 		ContestSource contestSource = ArgumentParser.parse(args, new OptionParser() {
 			@Override
 			public boolean setOption(String option, List<Object> options) throws IllegalArgumentException {
+				if ("--dev".equals(option)) {
+					devMode[0] = true;
+					return true;
+				}
 				if ("--display".equals(option)) {
 					ArgumentParser.expectOptions(option, options, "#:string");
 					displayStr2[0] = (String) options.get(0);
@@ -963,13 +976,19 @@ public class CoachView extends Panel {
 			public void showHelp() {
 				CoachView.showHelp();
 			}
+
+			@Override
+			public void showHelp(boolean all) {
+				CoachView.showHelp(all);
+			}
 		});
 		String displayStr = displayStr2[0];
 
 		RESTContestSource restSource = RESTContestSource.ensureContestAPI(contestSource);
 		restSource.outputValidation();
-		if (ContestAPIHelper.isCDS())
+		if (!devMode[0] && ContestAPIHelper.isCDS()) {
 			restSource.checkForUpdates("coachview-");
+		}
 
 		CoachView cv = new CoachView();
 		cv.contestSource = restSource;
