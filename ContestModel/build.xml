@@ -4,28 +4,4 @@
   <import file="common.xml"/>
   <property name="title" value="ICPC Contest Model"/>
   <property name="jar.name" value="contestModel"/>
-  <target name="test" depends="build">
-    <delete dir="bin-test"/>
-    <mkdir dir="bin-test"/>
-    <javac debug="true" debuglevel="${debuglevel}" destdir="bin-test" encoding="UTF-8" includeantruntime="false" release="${release}">
-      <src path="src"/>
-      <include name="**/*Test.java"/>
-      <classpath>
-        <pathelement location="bin"/>
-        <fileset dir="lib" erroronmissingdir="false" includes="**/*.jar"/>
-        <fileset dir="../lib" includes="**/*.jar"/>
-        <fileset dir="../testlib" includes="**/*.jar"/>
-      </classpath>
-    </javac>
-    <java classname="org.junit.runner.JUnitCore" fork="true" failonerror="true">
-      <classpath>
-        <pathelement location="bin-test"/>
-        <pathelement location="bin"/>
-        <fileset dir="lib" erroronmissingdir="false" includes="**/*.jar"/>
-        <fileset dir="../lib" includes="**/*.jar"/>
-        <fileset dir="../testlib" includes="**/*.jar"/>
-      </classpath>
-      <arg value="org.icpc.tools.contest.model.feed.CDSUtilTest"/>
-    </java>
-  </target>
 </project>

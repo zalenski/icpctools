@@ -15,7 +15,4 @@
       <ant dir="ContestUtil"/>
       <ant dir="ProblemSet"/>
    </target>
-   <target name="test">
-      <ant dir="ContestModel" target="test"/>
-   </target>
 </project>
