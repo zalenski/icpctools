@@ -29,7 +29,7 @@ public class YamlParserTest {
 		assertThat(info.getStartTime()).isEqualTo(1573981200000L);
 		assertThat(info.getDuration()).isEqualTo(7 * 3600 * 1000);
 		assertThat(info.getFreezeDuration()).isEqualTo((60 + 23) * 60 * 1000);
-		assertThat(info.getPenaltyTime()).isEqualTo(17);
+		assertThat(info.getPenaltyTime()).isEqualTo(17L * 60 * 1000);
 	}
 
 	@Test
@@ -56,14 +56,7 @@ public class YamlParserTest {
 				+ "scoreboard-freeze-length: 1:23:33\n";
 		Reader reader = new StringReader(exampleYaml);
 		Info info = YamlParser.parseInfo(reader, false);
-		boolean npe = false;
-		try {
-			assertThat(info.getPenaltyTime()).isEqualTo(20);
-		} catch (NullPointerException e) {
-			// TODO: use assertThrows, @since JUnit 4.13
-			npe = true;
-		}
-		assertThat(npe).isTrue();
+		assertThat(info.getPenaltyTime()).isNull();
 	}
 
 	@Test

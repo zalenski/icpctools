@@ -15,4 +15,62 @@
       <ant dir="ContestUtil"/>
       <ant dir="ProblemSet"/>
    </target>
+
+   <!--
+     Compile and run JUnit tests.
+     The builder image installs Ubuntu's ant package, which on 26.04 does not
+     include the optional junit task (that lives in ant-optional), so this
+     invokes org.junit.runner.JUnitCore directly.
+   -->
+   <target name="test" depends="build,run-tests" description="Build, then compile and run unit tests"/>
+   <target name="run-tests">
+      <delete dir="build/test-classes"/>
+      <mkdir dir="build/test-classes"/>
+
+      <path id="test.classpath">
+         <pathelement location="build/test-classes"/>
+         <dirset dir="." includes="*/bin"/>
+         <fileset dir="." includes="*/lib/*.jar"/>
+         <fileset dir="." includes="*/staging/*.jar"/>
+         <fileset dir="lib" includes="*.jar"/>
+         <fileset dir="testlib" includes="*.jar"/>
+         <fileset dir="CDS" includes="*.jar"/>
+      </path>
+
+      <javac debug="true" debuglevel="source,lines,vars" destdir="build/test-classes" encoding="UTF-8" includeantruntime="false" release="17" sourcepath="">
+         <src>
+            <dirset dir="." includes="*/src"/>
+            <dirset dir="." includes="*/test"/>
+         </src>
+         <include name="**/*Test.java"/>
+         <classpath refid="test.classpath"/>
+      </javac>
+
+      <path id="junit.classes">
+         <fileset dir="build/test-classes" includes="**/*Test.class">
+            <contains text="org/junit" casesensitive="true"/>
+         </fileset>
+      </path>
+      <resourcecount property="test.class.count" refid="junit.classes"/>
+      <echo message="JUnit test classes: ${test.class.count}"/>
+      <fail message="No JUnit tests found">
+         <condition>
+            <equals arg1="${test.class.count}" arg2="0"/>
+         </condition>
+      </fail>
+      <pathconvert property="test.classnames" pathsep=" " refid="junit.classes">
+         <chainedmapper>
+            <regexpmapper from="^.*/build/test-classes/(.*)\.class$$" to="\1" handledirsep="true"/>
+            <filtermapper>
+               <replacestring from="/" to="."/>
+               <replacestring from="\" to="."/>
+            </filtermapper>
+         </chainedmapper>
+      </pathconvert>
+      <echo message="Running ${test.classnames}"/>
+      <java classname="org.junit.runner.JUnitCore" fork="true" failonerror="true">
+         <classpath refid="test.classpath"/>
+         <arg line="${test.classnames}"/>
+      </java>
+   </target>
 </project>

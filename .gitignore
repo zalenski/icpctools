@@ -11,6 +11,7 @@ ContestUtil/src/org/icpc/tools/contest/util/cms/login.tsv
 CDS/WebContent/ui
 SWTLauncher/lib-platform/*.jar
 /out
+build/test-classes
 .idea/*
 !.idea/modules.xml
 !.idea/misc.xml
