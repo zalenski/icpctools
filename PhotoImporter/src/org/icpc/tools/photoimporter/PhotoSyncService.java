@@ -22,12 +22,15 @@ import org.icpc.tools.contest.model.photos.PhotoMetadata;
 
 /** Importer-owned jobs; polling discovers CDS definitions without taking ownership of new jobs. */
 public final class PhotoSyncService implements AutoCloseable {
+	public static final int DEFAULT_REFRESH_SECONDS = 300;
+	public static final int MIN_REFRESH_SECONDS = 15;
+
 	public enum State { STOPPED, DISABLED, MISSING_CREDENTIALS, QUEUED, RUNNING, STOPPING, SUCCEEDED, FAILED }
 
 	/** Immutable UI snapshot. No source credentials are exposed or persisted here. */
 	public record Status(String catalog, String importId, State state, boolean selected, boolean resumeOnRestart,
 			PhotoSync.Progress progress, int uploaded, int removed, long lastAttempt, long lastSuccess, String error,
-			boolean enabled, boolean periodic, long nextRun, int available) { }
+			boolean enabled, boolean periodic, long nextRun, int available, int refreshSeconds) { }
 
 	public record Failure(String photoId, String message) { }
 
@@ -36,7 +39,8 @@ public final class PhotoSyncService implements AutoCloseable {
 		final String id;
 		PhotoSources.Source source;
 		String key;
-		int refreshSeconds;
+		int refreshSeconds = DEFAULT_REFRESH_SECONDS;
+		boolean enabled;
 		boolean selected;
 		boolean resume;
 		boolean active;
@@ -158,10 +162,6 @@ public final class PhotoSyncService implements AutoCloseable {
 						}
 						job.source = source;
 						job.key = key;
-						if (job.refreshSeconds != settings.refreshSeconds) {
-							job.nextRun = 0;
-						}
-						job.refreshSeconds = settings.refreshSeconds;
 						if (counts != null) {
 							job.available = counts.getOrDefault(source.id, 0);
 						}
@@ -190,13 +190,13 @@ public final class PhotoSyncService implements AutoCloseable {
 		}
 	}
 
-	/** Explicit one-shot run of all enabled imports, without saving job selections. */
+	/** Explicit one-shot run of all imports, independent of local scheduling. */
 	public boolean tick() throws IOException {
 		poll();
 		List<Future<?>> pending = new ArrayList<>();
 		synchronized (this) {
 			for (Job job : jobs.values()) {
-				if (job.source != null && job.source.enabled) {
+				if (job.source != null) {
 					if (job.run == null && job.configError == null) {
 						submit(job);
 					}
@@ -217,7 +217,7 @@ public final class PhotoSyncService implements AutoCloseable {
 			}
 		}
 		synchronized (this) {
-			return error == null && jobs.values().stream().filter(job -> job.source != null && job.source.enabled)
+			return error == null && jobs.values().stream().filter(job -> job.source != null)
 					.allMatch(job -> job.state == State.SUCCEEDED);
 		}
 	}
@@ -228,9 +228,9 @@ public final class PhotoSyncService implements AutoCloseable {
 			result.add(new Status(job.catalog, job.id, job.state, job.selected, job.resume, job.progress,
 					job.uploaded, job.removed, job.lastAttempt, job.lastSuccess,
 					job.configError == null ? job.error : job.configError,
-					job.source != null && job.source.enabled, job.active,
-					job.active && job.source != null && job.source.enabled && job.configError == null && job.run == null
-							? job.nextRun : 0, job.available));
+					job.enabled, job.active && job.enabled,
+					job.active && job.enabled && job.source != null && job.configError == null && job.run == null
+							? job.nextRun : 0, job.available, job.refreshSeconds));
 		}
 		return List.copyOf(result);
 	}
@@ -279,20 +279,39 @@ public final class PhotoSyncService implements AutoCloseable {
 		return true;
 	}
 
-	/** Save shared activation on CDS, then reconcile this importer's jobs. */
-	public void setEnabled(String catalog, String importId, boolean enabled) throws IOException {
-		synchronized (pollLock) {
-			synchronized (this) {
-				requireJob(catalog, importId);
-			}
-			cds.sources(catalog, PhotoSources.withEnabled(cds.sources(catalog), importId, enabled));
-			if (!enabled) {
-				synchronized (this) {
-					cancel(requireJob(catalog, importId));
-				}
-			}
-			poll();
+	/** Activation belongs to this importer, never to shared CDS definitions. */
+	public synchronized void setEnabled(String catalog, String importId, boolean enabled) throws IOException {
+		Job job = requireJob(catalog, importId);
+		boolean previous = job.enabled;
+		job.enabled = enabled;
+		try {
+			saveState();
+		} catch (IOException e) {
+			job.enabled = previous;
+			throw e;
 		}
+		if (!enabled) {
+			cancel(job);
+		} else if (!previous) {
+			job.nextRun = 0;
+		}
+		schedule(job);
+	}
+
+	public synchronized void setRefreshSeconds(String catalog, String importId, int seconds) throws IOException {
+		if (seconds < MIN_REFRESH_SECONDS) {
+			throw new IllegalArgumentException("Refresh must be at least 15 seconds");
+		}
+		Job job = requireJob(catalog, importId);
+		int previous = job.refreshSeconds;
+		job.refreshSeconds = seconds;
+		try {
+			saveState();
+		} catch (IOException e) {
+			job.refreshSeconds = previous;
+			throw e;
+		}
+		job.nextRun = job.lastAttempt == 0 ? 0 : System.currentTimeMillis() + seconds * 1000L;
 	}
 
 	/** Start an explicitly selected job; resumeOnRestart is local to this importer. */
@@ -300,6 +319,8 @@ public final class PhotoSyncService implements AutoCloseable {
 		Job job = requireJob(catalog, importId);
 		boolean selected = job.selected;
 		boolean resume = job.resume;
+		boolean enabled = job.enabled;
+		job.enabled = true;
 		job.selected = true;
 		job.resume = resumeOnRestart;
 		try {
@@ -307,6 +328,7 @@ public final class PhotoSyncService implements AutoCloseable {
 		} catch (IOException e) {
 			job.selected = selected;
 			job.resume = resume;
+			job.enabled = enabled;
 			throw e;
 		}
 		job.active = true;
@@ -340,7 +362,7 @@ public final class PhotoSyncService implements AutoCloseable {
 		if (job.run != null) {
 			return;
 		}
-		if (job.source == null || !job.source.enabled) {
+		if (job.source == null || !job.enabled) {
 			job.state = State.DISABLED;
 		} else if (job.configError != null) {
 			job.state = State.MISSING_CREDENTIALS;
@@ -513,7 +535,12 @@ public final class PhotoSyncService implements AutoCloseable {
 			Job job = new Job(catalog, id);
 			job.selected = item.getBoolean("selected");
 			job.resume = item.getBoolean("resumeOnRestart");
-			job.active = job.selected && job.resume;
+			job.enabled = item.getBoolean("enabled");
+			job.refreshSeconds = item.containsKey("refreshSeconds") ? item.getInt("refreshSeconds") : DEFAULT_REFRESH_SECONDS;
+			if (job.refreshSeconds < MIN_REFRESH_SECONDS) {
+				throw new IOException("Invalid local refresh period");
+			}
+			job.active = job.selected && job.resume && job.enabled;
 			job.lastSuccess = item.containsKey("lastSuccess") ? item.getLong("lastSuccess") : 0;
 			jobs.put(jobId(catalog, id), job);
 		}
@@ -528,6 +555,8 @@ public final class PhotoSyncService implements AutoCloseable {
 			item.put("catalog", job.catalog);
 			item.put("importId", job.id);
 			item.put("selected", job.selected);
+			item.put("enabled", job.enabled);
+			item.put("refreshSeconds", job.refreshSeconds);
 			item.put("resumeOnRestart", job.resume);
 			item.put("lastSuccess", job.lastSuccess);
 			saved.add(item);

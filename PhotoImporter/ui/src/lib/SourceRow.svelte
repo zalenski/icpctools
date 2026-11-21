@@ -89,21 +89,21 @@
 					type="checkbox"
 					class="switch"
 					aria-label={`Active ${source.id}`}
-					checked={pendingActivation ?? source.enabled}
+					checked={pendingActivation ?? job?.enabled}
 					disabled={busy}
 					onchange={(event) => {
 						void toggle('activation', event.currentTarget.checked);
 					}}
-				/><span>Active</span></label
+				/><span>Active here</span></label
 			>
 		</div>
 		<div class="source-state">
 			<span
 				class:working={active}
 				class:problem={!!job?.error}
-				class:inactive={!source.enabled && !active}
+				class:inactive={!job?.enabled && !active}
 				class="badge">{label}</span
-			><small>{job?.periodic ? 'Selected on this importer' : 'Not running periodically here'}</small>
+			><small>{job?.periodic ? `Every ${job.refreshSeconds} seconds on this importer` : 'Not running periodically here'}</small>
 		</div>
 		<div class="source-count">
 			<strong>{job && job.available >= 0 ? job.available : '—'}</strong><small>available</small>
@@ -160,7 +160,7 @@
 	{#if expanded}
 		<div class="source-details">
 			<div class="detail-controls">
-				{#if source.enabled && !job?.periodic && !active}<button
+				{#if job?.enabled && !job?.periodic && !active}<button
 						class="secondary"
 						disabled={busy}
 						onclick={() => onaction('start', { resumeOnRestart: job?.resumeOnRestart || false })}

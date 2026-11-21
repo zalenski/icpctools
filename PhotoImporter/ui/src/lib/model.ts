@@ -5,15 +5,15 @@ export interface SourceConfig {
 	tag: string | null;
 	maxWidth: number | null;
 	maxHeight: number | null;
-	enabled: boolean;
 }
 export interface Catalog {
 	available: number;
 	id: string;
-	refreshSeconds: number;
 	sources: SourceConfig[];
 }
 export interface Job {
+	enabled: boolean;
+	refreshSeconds: number;
 	catalog: string;
 	importId: string;
 	state: string;
@@ -55,6 +55,7 @@ export interface SourceDraft {
 	tag: string;
 	maxWidth: string;
 	maxHeight: string;
+	refreshSeconds: string;
 	enabled: boolean;
 	runHere: boolean;
 	resumeOnRestart: boolean;
@@ -109,7 +110,6 @@ export function parseSnapshot(input: unknown): Snapshot {
 			return {
 				id: string(catalog.id),
 				available: numeric(catalog.available, -1),
-				refreshSeconds: numeric(catalog.refreshSeconds, 300),
 				sources: array(catalog.sources).map((value) => {
 					const source = object(value);
 					return {
@@ -118,8 +118,7 @@ export function parseSnapshot(input: unknown): Snapshot {
 						credentialProfile: string(source.credentialProfile) || null,
 						tag: string(source.tag) || null,
 						maxWidth: numeric(source.maxWidth) || null,
-						maxHeight: numeric(source.maxHeight) || null,
-						enabled: source.enabled === true
+						maxHeight: numeric(source.maxHeight) || null
 					};
 				})
 			};
@@ -128,6 +127,8 @@ export function parseSnapshot(input: unknown): Snapshot {
 			const job = object(value);
 			const progress = object(job.progress);
 			return {
+				enabled: job.enabled === true,
+				refreshSeconds: numeric(job.refreshSeconds, 300),
 				catalog: string(job.catalog),
 				importId: string(job.importId),
 				state: string(job.state),
@@ -199,6 +200,8 @@ export function positive(value: string, label: string): number | undefined {
 }
 export function sourcePayload(draft: SourceDraft): {
 	source: SourceConfig;
+	enabled: boolean;
+	refreshSeconds: number;
 	destination: string;
 	runHere: boolean;
 	resumeOnRestart: boolean;
@@ -229,18 +232,23 @@ export function sourcePayload(draft: SourceDraft): {
 			throw new Error('Use a Flickr album URL or flickr://album/ALBUM_ID.');
 		}
 	}
+	const refreshSeconds = positive(draft.refreshSeconds, 'Refresh interval') ?? 300;
+	if (refreshSeconds < 15) {
+		throw new Error('Refresh must be at least 15 seconds.');
+	}
 	return {
+		enabled: draft.enabled,
+		refreshSeconds,
 		destination: catalogId(draft.catalog),
 		runHere: draft.enabled && draft.runHere,
 		resumeOnRestart: draft.resumeOnRestart,
 		source: {
 			id: draft.id,
 			source,
-			credentialProfile: draft.kind === 'file' ? null : draft.profile || null,
+			credentialProfile: draft.kind === 'file' ? null : draft.profile || 'flickr/default',
 			tag: draft.kind === 'file' ? null : draft.tag.trim() || null,
 			maxWidth: positive(draft.maxWidth, 'Width') ?? null,
-			maxHeight: positive(draft.maxHeight, 'Height') ?? null,
-			enabled: draft.enabled
+			maxHeight: positive(draft.maxHeight, 'Height') ?? null
 		}
 	};
 }
@@ -256,7 +264,7 @@ export function stateLabel(source: SourceConfig, job?: Job): string {
 	if (job?.error) {
 		return job.state === 'MISSING_CREDENTIALS' ? 'Needs credentials' : 'Needs attention';
 	}
-	if (!source.enabled) {
+	if (!job?.enabled) {
 		return 'Inactive';
 	}
 	return job?.periodic ? 'Scheduled' : 'Available';

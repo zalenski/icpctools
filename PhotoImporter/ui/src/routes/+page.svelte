@@ -201,19 +201,12 @@
 						<div>
 							<h2>{catalog.id === 'photos' ? 'Default catalog' : catalog.id.slice(7)}</h2>
 							<p>
-								<code>{catalog.id === 'photos' ? 'catalog' : `catalog:${catalog.id.slice(7)}`}</code><span
-									>Every {catalog.refreshSeconds} seconds</span
-								>
+								<code>{catalog.id === 'photos' ? 'catalog' : `catalog:${catalog.id.slice(7)}`}</code>
 							</p>
 						</div>
 					</div>
 					<div class="catalog-actions">
-						<button
-							class="icon-button"
-							aria-label={`Settings ${catalog.id}`}
-							onclick={() => (catalogEditor = { catalog })}
-							><i class="fa-solid fa-sliders" aria-hidden="true"></i></button
-						><button class="secondary" onclick={() => (sourceEditor = { catalog: catalog.id })}
+						<button class="secondary" onclick={() => (sourceEditor = { catalog: catalog.id })}
 							><i class="fa-solid fa-plus" aria-hidden="true"></i> Add source</button
 						>
 					</div>
@@ -278,11 +271,11 @@
 {#if catalogEditor}<CatalogEditor
 		catalog={catalogEditor.catalog}
 		onclose={() => (catalogEditor = null)}
-		onsave={async (id, refresh) => {
+		onsave={async (id) => {
 			if (!catalogEditor?.catalog && snapshot.catalogs.some((catalog) => catalog.id === id)) {
 				throw new Error('That catalog already exists.');
 			}
-			await api.request(`catalogs/${encodeURIComponent(id)}`, 'PUT', { refreshSeconds: refresh });
+			await api.request(`catalogs/${encodeURIComponent(id)}`, 'PUT', {});
 			await load();
 			catalogEditor = null;
 		}}

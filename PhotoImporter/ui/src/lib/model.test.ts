@@ -18,6 +18,7 @@ const draft: SourceDraft = {
 	tag: '',
 	maxWidth: '',
 	maxHeight: '',
+	refreshSeconds: '30',
 	enabled: false,
 	runHere: false,
 	resumeOnRestart: false
@@ -28,7 +29,10 @@ describe('import definitions', () => {
 		expect(payload.destination).toBe('photos-teams');
 		expect(payload.source.source).toBe('file:///photos/Team%20photos');
 		expect(payload.source.credentialProfile).toBeNull();
-		expect(payload.source.enabled).toBe(false);
+		expect(payload.enabled).toBe(false);
+		expect(payload.refreshSeconds).toBe(30);
+		expect(payload.source).not.toHaveProperty('enabled');
+		expect(payload.source).not.toHaveProperty('refreshSeconds');
 		expect(payload.runHere).toBe(false);
 	});
 	it('rejects invalid identifiers, relative paths and non-Flickr remote URLs', () => {
@@ -37,6 +41,7 @@ describe('import definitions', () => {
 		expect(() => sourcePayload({ ...draft, kind: 'flickr', uri: 'https://example.com/albums/1' })).toThrow();
 		expect(() => positive('-1', 'Width')).toThrow();
 		expect(() => positive('1.5', 'Width')).toThrow();
+		expect(() => sourcePayload({ ...draft, refreshSeconds: '10' })).toThrow();
 		expect(catalogId('')).toBe('photos');
 		expect(() => catalogId('../other')).toThrow();
 	});
@@ -61,9 +66,10 @@ describe('polling snapshots', () => {
 		const snapshot = parseSnapshot({
 			...emptySnapshot,
 			csrfToken: 'token',
-			catalogs: [{ id: 'photos', refreshSeconds: '30', sources: [] }]
+			catalogs: [{ id: 'photos', sources: [] }],
+			jobs: [{ catalog: 'photos', importId: 'a', refreshSeconds: '30', progress: {} }]
 		});
-		expect(snapshot.catalogs[0].refreshSeconds).toBe(30);
+		expect(snapshot.jobs[0].refreshSeconds).toBe(30);
 		expect(() => parseSnapshot({ error: 'bad' })).toThrow();
 	});
 	it('preserves all references when nothing has changed', () => {
@@ -90,6 +96,6 @@ describe('polling snapshots', () => {
 	it('keeps source inactivity distinct from local job selection', () => {
 		const source = sourcePayload(draft).source;
 		expect(stateLabel(source)).toBe('Inactive');
-		expect(stateLabel({ ...source, enabled: true })).toBe('Available');
+		expect(stateLabel(source, { enabled: true } as import('./model').Job)).toBe('Available');
 	});
 });

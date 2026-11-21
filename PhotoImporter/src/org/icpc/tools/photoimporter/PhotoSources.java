@@ -21,8 +21,6 @@ public final class PhotoSources {
 	public static final String FILE_NAME = "photo-sources.json";
 	public static final String CREDENTIALS_FILE = "credentials.json";
 	public static final String DEFAULT_PROFILE = "flickr/default";
-	public static final int DEFAULT_REFRESH_SECONDS = 300;
-	public static final int MIN_REFRESH_SECONDS = 15;
 
 	public static final class Source {
 		public final String id;
@@ -31,7 +29,6 @@ public final class PhotoSources {
 		public final String tag;
 		public final Integer maxWidth;
 		public final Integer maxHeight;
-		public final boolean enabled;
 
 		private Source(JsonObject obj, JsonObject defaults) throws IOException {
 			id = required(obj, "id");
@@ -44,7 +41,6 @@ public final class PhotoSources {
 			tag = text(obj, "tag");
 			maxWidth = dimension(obj, defaults, "maxWidth");
 			maxHeight = dimension(obj, defaults, "maxHeight");
-			enabled = obj.getBoolean("enabled");
 			if (obj.containsKey("apiKey")) {
 				throw new IOException("Use credentialProfile instead of apiKey in " + FILE_NAME);
 			}
@@ -58,21 +54,19 @@ public final class PhotoSources {
 			Source s = (Source) other;
 			return id.equals(s.id) && uri.equals(s.uri) && Objects.equals(credentialProfile, s.credentialProfile)
 					&& Objects.equals(tag, s.tag) && Objects.equals(maxWidth, s.maxWidth)
-					&& Objects.equals(maxHeight, s.maxHeight) && enabled == s.enabled;
+					&& Objects.equals(maxHeight, s.maxHeight);
 		}
 
 		@Override
 		public int hashCode() {
-			return Objects.hash(id, uri, credentialProfile, tag, maxWidth, maxHeight, enabled);
+			return Objects.hash(id, uri, credentialProfile, tag, maxWidth, maxHeight);
 		}
 	}
 
 	public static final class Settings {
-		public final int refreshSeconds;
 		public final List<Source> sources;
 
-		private Settings(int refreshSeconds, List<Source> sources) {
-			this.refreshSeconds = refreshSeconds;
+		private Settings(List<Source> sources) {
 			this.sources = Collections.unmodifiableList(sources);
 		}
 	}
@@ -88,14 +82,6 @@ public final class PhotoSources {
 	public static Settings parse(JsonObject root) throws IOException {
 		if (root.containsKey("apiKey")) {
 			throw new IOException("Keep API keys in " + CREDENTIALS_FILE);
-		}
-		int refresh = DEFAULT_REFRESH_SECONDS;
-		if (root.containsKey("refreshSeconds")) {
-			refresh = root.getInt("refreshSeconds");
-			if (refresh < 0) {
-				throw new IOException("Invalid refreshSeconds in " + FILE_NAME);
-			}
-			refresh = Math.max(MIN_REFRESH_SECONDS, refresh);
 		}
 		List<Source> sources = new ArrayList<>();
 		Set<String> ids = new HashSet<>();
@@ -113,29 +99,7 @@ public final class PhotoSources {
 			}
 			sources.add(source);
 		}
-		return new Settings(refresh, sources);
-	}
-
-	/** Replace one activation flag while preserving other source and catalog settings. */
-	public static JsonObject withEnabled(JsonObject definitions, String importId, boolean enabled) throws IOException {
-		parse(definitions);
-		Object[] sources = definitions.getArray("sources").clone();
-		boolean found = false;
-		for (int i = 0; i < sources.length; i++) {
-			JsonObject source = (JsonObject) sources[i];
-			if (importId.equals(source.getString("id"))) {
-				JsonObject updated = copyExcept(source, "enabled");
-				updated.put("enabled", enabled);
-				sources[i] = updated;
-				found = true;
-			}
-		}
-		if (!found) {
-			throw new IOException("Unknown photo import");
-		}
-		JsonObject updated = copyExcept(definitions, "sources");
-		updated.put("sources", sources);
-		return updated;
+		return new Settings(sources);
 	}
 
 	/** Strip legacy scheduling fields before saving shared definitions on CDS. */

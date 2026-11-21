@@ -2,23 +2,16 @@ package org.icpc.tools.photoimporter;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.Writer;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import org.icpc.tools.contest.model.feed.JSONParser.JsonObject;
-import org.icpc.tools.contest.model.feed.JSONWriter;
 import org.icpc.tools.contest.model.photos.PhotoMetadata;
 
 /** Application behind the standalone web adapter; no browser or servlet state owns import jobs. */
@@ -80,7 +73,6 @@ public final class PhotoWebApplication implements AutoCloseable {
 				JsonObject catalog = new JsonObject();
 				catalog.put("id", entry.getKey());
 				catalog.put("available", current.service.available(entry.getKey()));
-				catalog.put("refreshSeconds", entry.getValue().refreshSeconds);
 				catalog.put("sources", entry.getValue().sources.stream().map(PhotoWebApplication::sourceJson).toArray());
 				catalogs.add(catalog);
 			}
@@ -91,6 +83,8 @@ public final class PhotoWebApplication implements AutoCloseable {
 				job.put("state", status.state().name());
 				job.put("selected", status.selected());
 				job.put("periodic", status.periodic());
+				job.put("enabled", status.enabled());
+				job.put("refreshSeconds", status.refreshSeconds());
 				job.put("resumeOnRestart", status.resumeOnRestart());
 				job.put("nextRun", status.nextRun());
 				job.put("lastSuccess", status.lastSuccess());
@@ -141,7 +135,7 @@ public final class PhotoWebApplication implements AutoCloseable {
 			saved.put("user", user);
 			saved.put("password", password);
 			saved.put("insecureCds", connection.insecure);
-			writePrivate(new File(data, "connection.json"), saved);
+			PhotoConfig.writePrivate(new File(data, "connection.json"), saved);
 		} catch (IOException | RuntimeException e) {
 			candidate.service.close();
 			throw e;
@@ -158,51 +152,34 @@ public final class PhotoWebApplication implements AutoCloseable {
 	private Session createSession(Connection connection) throws IOException {
 		CDSPhotoClient cds = new CDSPhotoClient(URI.create(connection.url), connection.user, connection.password,
 				connection.insecure);
-		File state = new File(data, "state.json");
-		File targetData = state.exists() && cds.target().toString().equals(PhotoMetadata.readObject(state).getString("target"))
-				? data : new File(data, "targets/" + UUID.nameUUIDFromBytes(cds.target().toString().getBytes(StandardCharsets.UTF_8)));
+		File targetData = PhotoConfig.targetData(data, cds);
 		return new Session(connection, cds, new PhotoSyncService(cds, targetData, data), targetData);
 	}
 
 	public synchronized void putCredential(String name, JsonObject input) throws IOException {
 		checkOpen();
-		if (!name.matches("flickr/[A-Za-z0-9_-]+")) {
-			throw new IllegalArgumentException("Expected a profile such as flickr/default");
-		}
-		File file = new File(data, "credentials.json");
-		JsonObject saved = file.exists() ? PhotoMetadata.readObject(file) : new JsonObject();
-		JsonObject profiles = saved.getJsonObject("profiles");
-		JsonObject updated = profiles == null ? new JsonObject() : PhotoSources.copyExcept(profiles, name);
-		if (input != null) {
-			JsonObject profile = new JsonObject();
-			profile.put("apiKey", required(input, "apiKey"));
-			updated.put(name, profile);
-		}
-		JsonObject root = PhotoSources.copyExcept(saved, "profiles");
-		root.put("profiles", updated);
-		writePrivate(file, root);
+		PhotoConfig.credential(data, name, input == null ? null : required(input, "apiKey"));
 		refresh();
 		ensurePolling();
 	}
 
 	public synchronized void saveCatalog(String catalog, JsonObject input) throws IOException {
 		Session current = requireSession();
-		JsonObject definitions = PhotoSources.copyExcept(current.cds.sources(catalog), "refreshSeconds");
-		int refresh = input.getInt("refreshSeconds");
-		if (refresh < PhotoSources.MIN_REFRESH_SECONDS) {
-			throw new IllegalArgumentException("Refresh must be at least 15 seconds");
-		}
-		definitions.put("refreshSeconds", refresh);
-		current.cds.sources(catalog, definitions);
+		current.cds.sources(catalog, PhotoSources.definitions(current.cds.sources(catalog)));
 		current.service.poll();
 	}
 
 	public synchronized void saveSource(String catalog, String id, JsonObject input) throws IOException {
 		Session current = requireSession();
+		int period = input.containsKey("refreshSeconds") ? input.getInt("refreshSeconds") : PhotoSyncService.DEFAULT_REFRESH_SECONDS;
+		if (period < PhotoSyncService.MIN_REFRESH_SECONDS) {
+			throw new IllegalArgumentException("Refresh must be at least 15 seconds");
+		}
 		JsonObject source = input.getJsonObject("source");
 		if (source == null || !id.equals(source.getString("id"))) {
 			throw new IllegalArgumentException("Source ID does not match");
 		}
+		source = PhotoSources.copyExcept(source, "enabled", "refreshSeconds");
 		PhotoSourceRegistry.create(required(source, "source"), null, text(source, "tag"));
 		String destination = text(input, "destination");
 		if (destination == null) {
@@ -242,7 +219,10 @@ public final class PhotoWebApplication implements AutoCloseable {
 			removeSource(catalog, id);
 		}
 		current.service.poll();
-		if (input.getBoolean("runHere")) {
+		current.service.setRefreshSeconds(destination, id, period);
+		current.service.setEnabled(destination, id, input.getBoolean("enabled"));
+		current.service.setResumeOnRestart(destination, id, input.getBoolean("resumeOnRestart"));
+		if (input.getBoolean("enabled") && input.getBoolean("runHere")) {
 			current.service.start(destination, id, input.getBoolean("resumeOnRestart"));
 		} else {
 			String target = destination;
@@ -363,7 +343,6 @@ public final class PhotoWebApplication implements AutoCloseable {
 		result.put("tag", source.tag);
 		result.put("maxWidth", source.maxWidth);
 		result.put("maxHeight", source.maxHeight);
-		result.put("enabled", source.enabled);
 		return result;
 	}
 
@@ -378,19 +357,6 @@ public final class PhotoWebApplication implements AutoCloseable {
 			throw new IllegalArgumentException("Missing " + name);
 		}
 		return value;
-	}
-
-	private static void writePrivate(File file, JsonObject object) throws IOException {
-		Files.createDirectories(file.getParentFile().toPath());
-		Path temporary = Files.createTempFile(file.getParentFile().toPath(), "photo-private-", ".tmp");
-		try {
-			try (Writer writer = Files.newBufferedWriter(temporary, StandardCharsets.UTF_8)) {
-				new JSONWriter(writer).writeObject(object);
-			}
-			Files.move(temporary, file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-		} finally {
-			Files.deleteIfExists(temporary);
-		}
 	}
 
 	@Override

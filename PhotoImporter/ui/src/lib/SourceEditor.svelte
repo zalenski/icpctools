@@ -25,11 +25,12 @@
 			catalog,
 			kind: source?.source.startsWith('file:') ? 'file' : 'flickr',
 			uri: source?.source || '',
-			profile: source?.credentialProfile || profiles[0] || '',
+			profile: source?.credentialProfile || 'flickr/default',
 			tag: source?.tag || '',
 			maxWidth: source?.maxWidth?.toString() || '',
 			maxHeight: source?.maxHeight?.toString() || '',
-			enabled: source?.enabled || false,
+			enabled: job?.enabled || false,
+			refreshSeconds: String(job?.refreshSeconds || 300),
 			runHere: job?.periodic || false,
 			resumeOnRestart: job?.resumeOnRestart || false
 		}))
@@ -125,8 +126,11 @@
 			>
 		</div>
 		<p class="hint">Preserves proportions and never enlarges photos. Blank means no size limit.</p>
+		<label class="field">Refresh interval on this importer <span class="optional">seconds</span>
+			<input bind:value={draft.refreshSeconds} inputmode="numeric" required />
+		</label>
 		<label class="check"
-			><input type="checkbox" bind:checked={draft.enabled} /> Active — allow periodic imports</label
+			><input type="checkbox" bind:checked={draft.enabled} /> Active on this importer — allow periodic imports</label
 		>
 		{#if draft.enabled}<label class="check"
 				><input type="checkbox" bind:checked={draft.runHere} /> Run periodically on this importer</label

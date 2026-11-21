@@ -46,7 +46,8 @@ public class PhotoWebServerTest {
 				Path input = work.resolve("input.png");
 				assertTrue(ImageIO.write(new BufferedImage(40, 20, BufferedImage.TYPE_INT_RGB), "png", input.toFile()));
 				JsonObject source = object("id", "local", "source", input.toUri().toString(), "enabled", false, "maxWidth", 20);
-				client.change("catalogs/photos-test/sources/local", "PUT", object("source", source, "create", true));
+				client.change("catalogs/photos-test/sources/local", "PUT", object("source", source, "create", true, "refreshSeconds", 45));
+				assertEquals(45, ((JsonObject) client.state().getArray("jobs")[0]).getInt("refreshSeconds"));
 				assertEquals(409, client.send("catalogs/photos-test/sources/local", "PUT", object("source", source, "create", true), client.token, null).statusCode());
 				client.change("jobs/photos-test/local/run", "POST", new JsonObject());
 				long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
@@ -72,7 +73,9 @@ public class PhotoWebServerTest {
 				assertEquals(1, client.get("results/photos-test/local").getArray("failures").length);
 				assertEquals(1, cds.store.index("photos-test").size());
 				client.change("jobs/photos-test/local/activation", "POST", object("enabled", true));
-				assertTrue(((JsonObject) cds.store.sources("photos-test").getArray("sources")[0]).getBoolean("enabled"));
+				assertFalse(((JsonObject) cds.store.sources("photos-test").getArray("sources")[0]).containsKey("enabled"));
+				assertFalse(cds.store.sources("photos-test").containsKey("refreshSeconds"));
+				assertTrue(((JsonObject) client.state().getArray("jobs")[0]).getBoolean("enabled"));
 				String state = json(client.state());
 				assertFalse(state.contains("private-test-api-key"));
 				assertFalse(state.contains("\"apiKey\""));

@@ -73,7 +73,7 @@ public final class CDSPhotoClient {
 
 	public void sources(String catalog, JsonObject definitions) throws IOException {
 		HttpRequest request = request(path(catalog) + "/sources").header("Content-Type", "application/json")
-				.PUT(BodyPublishers.ofString(json(definitions))).build();
+				.PUT(BodyPublishers.ofString(json(PhotoSources.definitions(definitions)))).build();
 		response(request);
 	}
 

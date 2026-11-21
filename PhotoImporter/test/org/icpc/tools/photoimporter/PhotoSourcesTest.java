@@ -22,7 +22,6 @@ public class PhotoSourcesTest {
 					+ "\"maxHeight\":1080,\"sources\":[{\"id\":\"teams\",\"source\":\"flickr://album/9\","
 					+ "\"credentialProfile\":\"flickr/default\",\"tag\":\"Team Photos\",\"maxWidth\":800,\"enabled\":true}]}");
 			PhotoSources.Settings settings = PhotoSources.read(catalog);
-			assertEquals(PhotoSources.MIN_REFRESH_SECONDS, settings.refreshSeconds);
 			PhotoSources.Source source = settings.sources.get(0);
 			assertEquals("teams", source.id);
 			assertEquals("flickr://album/9", source.uri);
@@ -30,27 +29,24 @@ public class PhotoSourcesTest {
 			assertEquals("Team Photos", source.tag);
 			assertEquals(Integer.valueOf(800), source.maxWidth);
 			assertEquals(Integer.valueOf(1080), source.maxHeight);
-			assertTrue(source.enabled);
 		} finally {
 			deleteTree(catalog);
 		}
 	}
 
 	@Test
-	public void rereadsEditsAndRequiresExplicitEnablement() throws Exception {
+	public void rereadsEditsAndDefaultsToTheDefaultFlickrProfile() throws Exception {
 		File catalog = Files.createTempDirectory("photo-source-edit").toFile();
 		try {
 			File config = new File(catalog, PhotoSources.FILE_NAME);
 			write(config, "{\"sources\":[{\"id\":\"teams\",\"source\":\"flickr://album/9\"}]}");
 			PhotoSources.Settings first = PhotoSources.read(catalog);
-			assertEquals(PhotoSources.DEFAULT_REFRESH_SECONDS, first.refreshSeconds);
-			assertFalse(first.sources.get(0).enabled);
+			assertEquals("flickr/default", first.sources.get(0).credentialProfile);
 			assertEquals(null, first.sources.get(0).maxWidth);
 			write(config, "{\"sources\":[{\"id\":\"teams\",\"source\":\"flickr://album/10\",\"enabled\":true}]}");
 			PhotoSources.Source next = PhotoSources.read(catalog).sources.get(0);
 			assertEquals("teams", next.id);
 			assertEquals("flickr://album/10", next.uri);
-			assertTrue(next.enabled);
 		} finally {
 			deleteTree(catalog);
 		}

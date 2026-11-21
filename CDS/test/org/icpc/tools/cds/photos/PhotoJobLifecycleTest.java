@@ -39,7 +39,7 @@ public class PhotoJobLifecycleTest {
 			client.sources("photos-test", definition(source, true, 20));
 			try (PhotoSyncService service = new PhotoSyncService(client, work.resolve("data").toFile())) {
 				service.poll();
-				assertEquals(State.STOPPED, status(service).state());
+				assertEquals(State.DISABLED, status(service).state());
 				assertTrue(client.index("photos-test").isEmpty());
 				service.start("photos-test", "test", false);
 				await(() -> status(service).state() == State.SUCCEEDED);
@@ -52,7 +52,7 @@ public class PhotoJobLifecycleTest {
 				service.poll();
 				await(() -> status(service).state() == State.SUCCEEDED);
 				assertEquals(10, client.index("photos-test").get(0).getWidth());
-				client.sources("photos-test", definition(source, false, 10));
+				service.setEnabled("photos-test", "test", false);
 				service.poll();
 				assertEquals(State.DISABLED, status(service).state());
 				assertEquals(1, client.index("photos-test").size());
@@ -63,6 +63,7 @@ public class PhotoJobLifecycleTest {
 				assertNotNull(service.error());
 				assertEquals(1, client.index("photos-test").size());
 				client.sources("photos-test", definition(source, true, 10));
+				service.setEnabled("photos-test", "test", true);
 				service.poll();
 				assertNull(service.error());
 				await(() -> status(service).state() == State.SUCCEEDED);
@@ -308,7 +309,39 @@ public class PhotoJobLifecycleTest {
 	}
 
 	@Test
-	public void runNowDoesNotEnablePeriodicWorkAndActivationIsSavedOnCds() throws Exception {
+	public void periodsAndActivationBelongToEachImporterAndSurviveRestart() throws Exception {
+		Path work = Files.createTempDirectory("photo-local-scheduling");
+		try (PhotoApiTestServer server = new PhotoApiTestServer(work.resolve("cds").toFile())) {
+			CDSPhotoClient client = client(server);
+			client.sources("photos-test", definition(image(work.resolve("input.png")), true, 20));
+			File data = work.resolve("first").toFile();
+			try (PhotoSyncService first = new PhotoSyncService(client, data);
+					PhotoSyncService second = new PhotoSyncService(client, work.resolve("second").toFile())) {
+				first.poll();
+				second.poll();
+				first.setEnabled("photos-test", "test", true);
+				first.setRefreshSeconds("photos-test", "test", 45);
+				assertTrue(status(first).enabled());
+				assertEquals(45, status(first).refreshSeconds());
+				second.poll();
+				assertFalse(status(second).enabled());
+				assertEquals(300, status(second).refreshSeconds());
+				assertFalse(client.sources("photos-test").containsKey("refreshSeconds"));
+				assertFalse(((JsonObject) client.sources("photos-test").getArray("sources")[0]).containsKey("enabled"));
+			}
+			try (PhotoSyncService reopened = new PhotoSyncService(client, data)) {
+				reopened.poll();
+				assertTrue(status(reopened).enabled());
+				assertEquals(45, status(reopened).refreshSeconds());
+				assertFalse(status(reopened).periodic());
+			}
+		} finally {
+			delete(work);
+		}
+	}
+
+	@Test
+	public void runNowDoesNotEnablePeriodicWorkAndSchedulingIsOnlySavedLocally() throws Exception {
 		Path work = Files.createTempDirectory("photo-job-ui-controls");
 		try (PhotoApiTestServer server = new PhotoApiTestServer(work.resolve("cds").toFile())) {
 			CDSPhotoClient client = client(server);
@@ -330,7 +363,10 @@ public class PhotoJobLifecycleTest {
 				await(() -> status(service).state() == State.SUCCEEDED);
 				assertTrue(status(service).nextRun() > System.currentTimeMillis());
 				assertTrue(status(service).periodic());
-				assertTrue(((JsonObject) client.sources("photos-test").getArray("sources")[0]).getBoolean("enabled"));
+				assertFalse(((JsonObject) client.sources("photos-test").getArray("sources")[0]).containsKey("enabled"));
+				service.setRefreshSeconds("photos-test", "test", 45);
+				assertEquals(45, status(service).refreshSeconds());
+				assertFalse(client.sources("photos-test").containsKey("refreshSeconds"));
 				service.setEnabled("photos-test", "test", false);
 				assertEquals(State.DISABLED, status(service).state());
 				assertEquals(0, status(service).nextRun());
