@@ -20,6 +20,7 @@ import org.icpc.tools.contest.model.feed.JSONParser.JsonObject;
 public final class PhotoSources {
 	public static final String FILE_NAME = "photo-sources.json";
 	public static final String CREDENTIALS_FILE = "credentials.json";
+	public static final String DEFAULT_PROFILE = "flickr/default";
 	public static final int DEFAULT_REFRESH_SECONDS = 300;
 	public static final int MIN_REFRESH_SECONDS = 15;
 
@@ -38,7 +39,8 @@ public final class PhotoSources {
 				throw new IOException("Import IDs may contain letters, digits, underscores and hyphens");
 			}
 			uri = required(obj, "source");
-			credentialProfile = text(obj, "credentialProfile");
+			String profile = text(obj, "credentialProfile");
+			credentialProfile = uri.startsWith("file:") ? null : profile == null ? DEFAULT_PROFILE : profile;
 			tag = text(obj, "tag");
 			maxWidth = dimension(obj, defaults, "maxWidth");
 			maxHeight = dimension(obj, defaults, "maxHeight");
@@ -136,10 +138,27 @@ public final class PhotoSources {
 		return updated;
 	}
 
-	static JsonObject copyExcept(JsonObject object, String excluded) {
+	/** Strip legacy scheduling fields before saving shared definitions on CDS. */
+	static JsonObject definitions(JsonObject root) {
+		JsonObject result = copyExcept(root, "refreshSeconds", "enabled");
+		Object[] sources = root.getArray("sources");
+		if (sources != null) {
+			Object[] cleaned = sources.clone();
+			for (int i = 0; i < cleaned.length; i++) {
+				if (cleaned[i] instanceof JsonObject source) {
+					cleaned[i] = copyExcept(source, "enabled", "refreshSeconds");
+				}
+			}
+			result.put("sources", cleaned);
+		}
+		return result;
+	}
+
+	static JsonObject copyExcept(JsonObject object, String... excluded) {
 		JsonObject result = new JsonObject();
+		result.props = new java.util.LinkedHashMap<>();
 		for (String key : object.props.keySet()) {
-			if (!excluded.equals(key)) {
+			if (!java.util.Arrays.asList(excluded).contains(key)) {
 				result.put(key, object.props.get(key));
 			}
 		}

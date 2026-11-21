@@ -1,180 +1,125 @@
-# Photo importer (development)
+# Photo importer
 
-Runs independently of CDS. `PhotoImporter` depends only on ContestModel; CDS has
-no Flickr integration or image-processing worker. The standalone web UI uses the
-same import service. Standard distribution/WAR packaging is a later step.
+Import Flickr albums or local files into CDS photo catalogs from a standalone CLI.
+Source credentials, originals and image processing stay on the importer machine;
+CDS stores display images and metadata through an authenticated HTTP API.
+Standard distribution/container integration remains a later step.
 
-Build after ContestModel:
+The examples run from the repo root using the development JARs. See
+[Building from source](#building-from-source) if they are not built yet.
+`--data DIRECTORY` selects private configuration and cache storage; it defaults
+to `photo-importer`.
+
+## Setup, then import
+
+Save the CDS connection using an admin or presentation-admin account:
+
+```sh
+java -cp 'PhotoImporter/staging/*' org.icpc.tools.photoimporter.PhotoImporter \
+  --cds https://localhost:8443 --user admin --password PASSWORD --insecure-cds
+```
+
+`--insecure-cds` accepts a self-signed certificate only for CDS. Omit it for a
+trusted certificate; `--secure-cds` restores normal certificate checking in saved
+settings. Source TLS validation is unchanged. The positional alternative
+`CDS_URL USER PASSWORD` is also accepted and saved.
+
+Then save a Flickr key, configure an import, and run it:
+
+```sh
+java -cp 'PhotoImporter/staging/*' org.icpc.tools.photoimporter.PhotoImporter --flickr-key YOUR_KEY
+java -cp 'PhotoImporter/staging/*' org.icpc.tools.photoimporter.PhotoImporter \
+  --id team-photos --source flickr://album/ALBUM_ID --catalog teams --max-width 1920
+java -cp 'PhotoImporter/staging/*' org.icpc.tools.photoimporter.PhotoImporter --run team-photos
+```
+
+A normal Flickr album/set URL works too. `--tag 'event$Team Photos'` filters an
+album. Keys can be saved before configuring or contacting CDS. Create a Flickr
+key at [Flickr's app setup page](https://www.flickr.com/services/apps/create/).
+
+Configuration arguments always save their changes. Setup never starts imports;
+`--run` does. You may combine setup and execution in one command. With no options,
+the CLI lists configuration, key-profile IDs/status, local file paths and remote
+CDS definition locations, without printing key values or passwords. If CDS is
+unavailable, local settings are still shown.
+
+`--profile NAME` selects a named key when saving credentials or configuring an
+import. A short name such as `other` means `flickr/other`; omission uses
+`flickr/default`. Editing an existing import preserves its profile unless an
+explicit replacement is supplied. Import IDs are stable ownership identifiers;
+keep the same ID when editing an album, filter or size limit.
+
+Catalog `teams` means the CDS folder `photos-teams`. Omit `--catalog` when creating
+an import to use `photos`, the default catalog. Editing a named catalog requires
+`--catalog NAME`. Optional `--max-width` and `--max-height` preserve proportions
+and never enlarge images; zero removes a saved limit. Changing limits reuses
+originals and prepared copies wherever possible.
+
+## Local files
+
+No source credentials are needed:
+
+```sh
+java -cp 'PhotoImporter/staging/*' org.icpc.tools.photoimporter.PhotoImporter \
+  --id local --source /absolute/path/to/photos --catalog teams --max-width 1920
+java -cp 'PhotoImporter/staging/*' org.icpc.tools.photoimporter.PhotoImporter --run photos-teams/local
+```
+
+A `file:` URI or a single file works too. Folder scans include subdirectories.
+The importer reads originals directly, without modifying them or making a second
+original archive. Images must decode even without resizing. A persistent local
+scan index records file paths, sizes, modification times and processing results;
+unchanged valid and invalid files avoid repeated decoding across restarts.
+Changed limits regenerate copies only when output dimensions change. Transient
+failures and files that change during reading are retried; a corrupt replacement
+preserves the last good copy. JSON and TMP files are skipped.
+
+## Repeated runs and storage
+
+Repeat `--run ID` to select several imports, use `--run all` for all definitions,
+or plain `--run` for all (or the `--id` being configured). If an ID exists in more
+than one catalog, use `photos[-name]/ID`. `--catalog NAME` restricts a run to that
+catalog. Without a period each command makes one pass and exits:
+
+```sh
+java -cp 'PhotoImporter/staging/*' org.icpc.tools.photoimporter.PhotoImporter \
+  --run photos-teams/team-photos --period 300
+```
+
+`--period` requires `--run`, has a minimum of 15 seconds and is never saved. The
+next pass starts after the previous pass finishes and the period elapses. Failed
+periodic passes are reported and retried; a failed single pass exits with an
+error. Ctrl+C interrupts HTTP and checkpoints completed work. Image processing
+may finish before stopping. Definitions and key profiles are reloaded each pass.
+
+The data directory contains private `connection.json` and `credentials.json`.
+Import definitions stay on CDS in `present/photos[-name]/photo-sources.json`,
+without scheduling or activation flags. `--sources FILE [--catalog NAME]` installs
+such a file. Legacy `enabled`/`refreshSeconds` fields are ignored and removed when
+definitions are saved. Several imports can share a catalog; each owns only its
+own photos, and manually placed files are preserved.
+
+Target-specific `originals/` and `cache/` live under `targets/<target-id>/`.
+Matching data from older CLI versions with a root `state.json` is reused.
+Downloaded Flickr originals stay local; local-file originals are read in place.
+Prepared images and resume indexes allow upload retries without fetching or
+resizing again. Missing photos are pruned only after a complete listing/scan;
+an unavailable source or interrupted scan preserves existing CDS photos.
+
+Choose the catalog in the existing Photos presentation using `catalog:teams`, or
+`catalog` for the default. The presentation picks up index changes as imported
+photos become available.
+
+See [API.md](API.md) for the CDS photo API reference.
+
+## Building from source
+
+Build CDS with the photo API, then build the importer (Java 17+):
 
 ```sh
 ant -f ContestModel/build.xml jar
 ant -f PhotoImporter/build.xml jar
 ```
 
-In IntelliJ, run `org.icpc.tools.photoimporter.PhotoImporter` in module
-`PhotoImporter`, with program arguments:
-
-```text
-https://localhost:8443 admin PASSWORD --data /path/to/photo-importer --once --insecure-cds
-```
-
-URL, user and password are positional arguments, using the same `ArgumentParser`
-as the other clients. `--insecure-cds` accepts a self-signed certificate for the target CDS only;
-omit it for a trusted certificate. `--once` explicitly runs all enabled imports once.
-CDS must be rebuilt with the photo API before using the importer.
-
-For a private CA, Java also accepts a truststore through VM options:
-`-Djavax.net.ssl.trustStore=/path/to/truststore.p12` and
-`-Djavax.net.ssl.trustStorePassword=PASSWORD`. Run without `--insecure-cds` in
-that case. This replaces the JVM's default truststore for all normal TLS clients,
-so include public roots needed by Flickr too. Hostname verification still applies.
-See the [JSSE guide](https://docs.oracle.com/en/java/javase/17/security/java-secure-socket-extension-jsse-reference-guide.html).
-
-HTTP uses reusable JDK `HttpClient` instances with a 15-second connect timeout
-and a 60-second request timeout (replacing the previous read timeout). Source
-requests follow redirects except HTTPS-to-HTTP; authenticated CDS requests do not.
-
-The same main class runs from the CLI with classpath `PhotoImporter/staging/*`.
-The data directory contains `credentials.json` (named Flickr profiles), `originals/`
-and `cache/`, separated by catalog, plus importer-owned `state.json`. The cache holds display copies and a resume
-index, allowing upload retries without downloading or resizing again.
-
-## Web UI
-
-Build the frontend with Node 24+ and pnpm, then package the standalone web launcher:
-
-```sh
-cd PhotoImporter/ui
-pnpm install
-pnpm check
-pnpm test
-cd ../..
-ant -f ContestModel/build.xml jar
-ant -f PhotoImporter/build.xml web
-java -cp 'PhotoImporter/staging/*' org.icpc.tools.photoimporter.PhotoWebServer --data /path/to/photo-importer
-```
-
-Open `http://127.0.0.1:8787/photo-importer/`. Connect to the target CDS, manage
-Flickr key profiles, create catalogs and add Flickr/local sources. Activation is
-saved on CDS; local periodic selection and restart preferences belong to this
-importer. Run now works for inactive sources without enabling periodic execution.
-Removing a source preserves its photos. Status, photo results and failures remain
-available while imports run independently of the browser tab.
-
-For IntelliJ, run `org.icpc.tools.photoimporter.PhotoWebServer` in module
-`PhotoImporter` after `pnpm build`. It reads `PhotoImporter/ui/build` from the repo
-root, or use `--ui DIRECTORY`. `--port PORT` changes the listener; `--context PATH`
-must match the frontend's `PHOTO_IMPORTER_BASE` build setting (default
-`/photo-importer`). The launcher binds to localhost; production Liberty hosting
-and distribution integration remain step 5.
-
-The web launcher stores private CDS credentials in `connection.json` and keys in
-`credentials.json`, under `--data`. Browser responses never contain those secrets.
-Target-specific job data is stored under `targets/<target-id>/`. Existing CLI data
-at the data root is reused when its saved target matches. Profiles are shared
-across targets, but job selection and cached images are separate.
-
-Frontend development: run the Java launcher, then `pnpm dev` in `PhotoImporter/ui`.
-Vite proxies `/photo-importer/api` to `http://127.0.0.1:8787` (override with
-`IMPORTER_URL`). Vitest runs TypeScript behavior tests; `pnpm test:watch` watches
-changes. Type checking and production builds are separate checks. The frontend
-uses the same Svelte/Tailwind/component conventions as `CDS/ui`; Java serves its
-static output, with no Node server needed at runtime.
-
-Definitions remain on CDS in each catalog's `photo-sources.json`. Use
-`--catalog photos-teams --sources /path/to/photo-sources.json` to install a file
-through the API before syncing. Source URIs support Flickr albums and `file:` URLs
-for a local file or folder. Local sources need no credential profile. Import IDs
-use letters, digits, underscores and hyphens. Downloaded originals stay on the importer;
-local sources are read directly from their configured paths.
-
-## Local files
-
-Use a `file:` URI as the source, pointing to a file or directory on the importer
-machine. Directories are scanned recursively at the configured refresh interval;
-no source credentials are needed. For example:
-
-```json
-{"refreshSeconds":30,"sources":[{"id":"local","source":"file:///path/to/photos/","enabled":true,"maxWidth":1920}]}
-```
-
-The importer reads originals directly through `PhotoScale`, without copying them
-to `originals/`. Decoding must succeed even without size limits. A new display
-copy replaces the previous one only after decoding and checking that the source
-did not change during reading. Unstable files are retried on the next scan.
-
-`cache/<catalog>/local-index-<import-id>.json` records relative paths, sizes,
-modification times and processing results. Unchanged valid and invalid files
-avoid repeated decoding across restarts. Transient failures are retried; changed
-limits regenerate display copies only if the resulting dimensions change. Original
-dimensions are stored in the scan index; existing display dimensions come from
-`photos-index.json`. If they still match the new size decision, decoding, copying
-and image upload are skipped and only metadata is updated. Older scan entries
-without original dimensions are processed once to populate them.
-Unsupported/non-image files are recorded as
-invalid and ignored; a corrupt replacement of an imported photo reports a failure
-and preserves its last good copy. JSON and TMP files are skipped.
-
-This scan index is importer-local and stores no photo ownership or display
-filenames; `photos-index.json` remains authoritative for imported images. Both
-files are saved atomically. Missing photos are pruned only after a complete scan,
-and only for this import. An unavailable source directory never means an empty
-catalog. Existing original copies from older importer versions are no longer
-needed for local sources; no new copies are made.
-
-## Jobs (CLI and web UI)
-
-A new importer discovers definitions without automatically taking over their jobs.
-For continuous sync, explicitly select jobs; repeat `--start` for several imports:
-
-```text
-https://localhost:8443 admin PASSWORD --data /path/to/photo-importer --start photos-teams/team-photos --resume-on-restart --insecure-cds
-```
-
-`--resume-on-restart` opts those jobs into automatic restart. Without it, their
-selection is saved but they remain stopped after restarting the importer. Other
-enabled CDS definitions remain available to select. Source `enabled` must also be
-true. Ctrl+C stops current work; restart preferences are retained.
-
-`PhotoSyncService` exposes `poll()`, `status()`, `start(catalog, id, resumeOnRestart)`,
-`stop(catalog, id)`, `retry(catalog, id)`, `runNow(catalog, id)`,
-`setEnabled(catalog, id, enabled)` and `close()` for the web UI. `runNow` runs one
-cycle even for an inactive source, without selecting periodic work or changing
-restart preferences. `setEnabled` saves the shared activation flag on CDS.
-Status snapshots include the phase, counts, available photos, errors, last success
-and next scheduled run (zero if not scheduled). Polling reloads
-definitions and credentials without waiting for imports. Imports share one worker
-to serialize local catalog-index writes. Changed definitions/keys cancel the old
-run before its replacement; disabled or removed definitions stop importing.
-
-Job selections, restart preferences and last-success times are written atomically
-to `state.json`, bound to the target CDS URL. Use a separate data directory for a
-different target. Secrets remain in `credentials.json`; definitions stay on CDS.
-
-Stop interrupts pending HTTP and checks cancellation between other operations.
-Image decoding/scaling may finish before stopping. Completed photos remain usable;
-cancellation checkpoints completed local work and never prunes unvisited photos.
-An upload already received by CDS may finish even after the job stops. Retry reuses
-local originals and prepared images. A stopped job is not automatically retried;
-selected active jobs continue polling after ordinary failures.
-
-## CDS API
-
-Requires an existing admin or presentation-admin account. All catalog access uses
-HTTP, even when importer and CDS run on the same host.
-
-- `GET /api/photos/catalogs`: list catalog folder names (`photos`, `photos-teams`, …).
-- `GET/PUT /api/photos/catalogs/{catalog}/sources`: import definitions.
-- `GET /api/photos/catalogs/{catalog}/index`: stored photo metadata.
-- `POST /api/photos/catalogs/{catalog}/imports/{id}/photos`: multipart `metadata`
-  JSON and `photo` bytes; returns stored metadata, including the allocated filename.
-- `PUT /api/photos/catalogs/{catalog}/imports/{id}/photos`: JSON metadata update
-  for an unchanged image; preserves its bytes and allocated filename. Returns 404
-  if the photo/file is missing, allowing the importer to fall back to uploading it.
-- `DELETE /api/photos/catalogs/{catalog}/imports/{id}/photos?photoId=…`: delete one
-  indexed photo belonging to that import.
-
-CDS preserves manually placed files and other imports. Uploads and index files use
-atomic replacement; each completed upload is registered on CDS immediately.
-The importer publishes its local checkpoints about every ten seconds and on
-completion. Only a complete source listing permits removal of old remote photos.
+For development in IntelliJ, run `org.icpc.tools.photoimporter.PhotoImporter`
+in the `PhotoImporter` module, with the CLI options as program arguments.

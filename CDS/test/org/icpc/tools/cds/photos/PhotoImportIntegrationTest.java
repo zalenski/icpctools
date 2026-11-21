@@ -148,7 +148,7 @@ public class PhotoImportIntegrationTest {
 					"-Djava.awt.headless=true", "-Djava.io.tmpdir=" + work,
 					"-cp", System.getProperty("java.class.path"), "org.icpc.tools.photoimporter.PhotoImporter",
 					server.uri().toString(), "admin", "password", "--data", data.toString(),
-					"--once", "--catalog", "photos-cli", "--sources", definitions.toString());
+					"--run", "all", "--catalog", "photos-cli", "--sources", definitions.toString());
 			builder.redirectErrorStream(true).redirectOutput(output);
 			Process process = builder.start();
 			if (!process.waitFor(20, java.util.concurrent.TimeUnit.SECONDS)) {
