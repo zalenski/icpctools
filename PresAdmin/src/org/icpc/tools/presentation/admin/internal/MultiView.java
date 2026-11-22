@@ -25,6 +25,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.prefs.Preferences;
 
 public class MultiView {
     private List<BasicClient> basicClients = new ArrayList<>();
@@ -206,7 +207,21 @@ public class MultiView {
         mainPanel.add(sceneSplit);
         JSplitPane mainSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
         sceneSplit.add(mainSplit);
-        sceneSplit.add(scenes.createScenesPanel(this));
+        JPanel scenesPanel = scenes.createScenesPanel(this);
+
+        // Stage dimensions
+        Map<String, Dimension> stageDims = Multi49Baku.stageDisplayAreas();
+        JPanel dimPanel = new JPanel(new GridLayout(stageDims.size(), 1));
+        stageDims.forEach((level, dim) -> {
+            JButton levelBut = new JButton(level);
+            levelBut.addActionListener(e -> {
+                applyDim(dim);
+            });
+            dimPanel.add(levelBut);
+        });
+        scenesPanel.add(dimPanel, BorderLayout.EAST);
+
+        sceneSplit.add(scenesPanel);
 
         // Left Panel
         JPanel leftPanel = new JPanel();
@@ -465,6 +480,24 @@ public class MultiView {
         }
         if (foundPre != null) {
             applyPresentation(foundPre.presClass, msg, null);
+        }
+    }
+
+    private void applyDim(Dimension dim) {
+        for (Map.Entry<String, BasicClient.Client> entry : selectedClients().entrySet()) {
+            BasicClient.Client client = entry.getValue();
+            String urlName = entry.getKey();
+            int[] uids = new int[]{client.uid};
+            String rect = "";
+            if (dim != null) {
+                rect = "0,0," + dim.width + "," + dim.height;
+            }
+            try {
+                BasicClient bc = urlNameBasicClients.get(urlName);
+                bc.sendProperty(uids, "displayRect", rect);
+            } catch (IOException e) {
+                Trace.trace(Trace.ERROR, "Error sending property to " + urlName, e);
+            }
         }
     }
 
