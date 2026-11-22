@@ -219,7 +219,7 @@ public class MultiView {
         leftPanel.add(new JScrollPane(clientsList), BorderLayout.CENTER);
 
         // Quick buttons
-        JPanel quickButtonsPanel = Multi48Astana.quickButtons(clientsList);
+        JPanel quickButtonsPanel = Multi49Baku.quickButtons(clientsList);
         leftPanel.add(quickButtonsPanel, BorderLayout.SOUTH);
 
         // Right Panel
@@ -503,8 +503,8 @@ public class MultiView {
                     String propKey = "property[" + presClass.substring(ind + 1) + "|" + presClass.hashCode() + "]";
 
                     String arrowMsg = msg;
-                    Map<String, String> arrowMap = Multi48Astana.arrowMap();
-                    Map<String, String> channelMap = Multi48Astana.channelMap();
+                    Map<String, String> arrowMap = Multi49Baku.arrowMap();
+                    Map<String, String> channelMap = Multi49Baku.channelMap();
                     for (Map.Entry<String, String> entry2 : arrowMap.entrySet()) {
                         if (client.name.contains(entry2.getKey())) {
                             arrowMsg = arrowMsg.replace("<--->", entry2.getValue());

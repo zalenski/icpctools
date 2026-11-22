@@ -35,7 +35,7 @@ public class MultiScene {
     JList<String> sceneList = new JList<>();
     JList<String> presetsList = new JList<>();
 
-    List<Scene> scenes = Multi48Astana.makeSomeScenes();
+    List<Scene> scenes = Multi49Baku.makeSomeScenes();
 
     /**
      * Represents a scene, which is a set of presentations or composite presentations, and which clients
