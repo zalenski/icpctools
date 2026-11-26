@@ -1,0 +1,1901 @@
+#!/usr/bin/env python3
+"""Render a git diff beside a markdown walkthrough.
+
+The walkthrough cites new-side line ranges such as ``path/File.java:120-140``.
+This script runs ``git diff -U3``, resolves those citations against the hunks,
+and writes one HTML file. The page loads diff2html from a CDN, scrolls the
+walkthrough and the diff independently, and jumps from a section to the lines
+it cites.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import subprocess
+import sys
+import webbrowser
+from pathlib import Path
+
+DIFF2HTML_VERSION = "3.4.56"
+DIFF2HTML_CSS = (
+    f"https://cdn.jsdelivr.net/npm/diff2html@{DIFF2HTML_VERSION}/bundles/css/diff2html.min.css"
+)
+DIFF2HTML_JS = (
+    f"https://cdn.jsdelivr.net/npm/diff2html@{DIFF2HTML_VERSION}/bundles/js/diff2html-ui.min.js"
+)
+
+_LOCATION_RE = re.compile(r"^(?P<path>.+?):(?P<start>\d+)(?:-(?P<end>\d+))?$")
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(?P<start>\d+)(?:,\d+)? @@")
+_FENCE_RE = re.compile(r"^ {0,3}```")
+_H1_RE = re.compile(r"^ {0,3}#\s+(.*)$")
+_H2_RE = re.compile(r"^ {0,3}##\s+(.*)$")
+_CODE_SPAN_RE = re.compile(r"`([^`]+)`")
+_TRAILING_HASHES_RE = re.compile(r"\s+#+\s*$")
+
+
+def die(message: str, code: int = 1) -> None:
+    print(f"error: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def _parse_git_path_token(text: str, index: int) -> tuple[str, int]:
+    """Read one path from a git diff header, honoring C-style quotes."""
+    if index >= len(text):
+        return "", index
+    if text[index] != '"':
+        end = index
+        while end < len(text) and text[end] != " ":
+            end += 1
+        return text[index:end], end
+    data = bytearray()
+    cursor = index + 1
+    while cursor < len(text):
+        char = text[cursor]
+        if char == '"':
+            return data.decode("utf-8", "surrogateescape"), cursor + 1
+        if char == "\\" and cursor + 1 < len(text):
+            nxt = text[cursor + 1]
+            if nxt in "01234567":
+                digits = ""
+                digit_at = cursor + 1
+                while digit_at < len(text) and len(digits) < 3 and text[digit_at] in "01234567":
+                    digits += text[digit_at]
+                    digit_at += 1
+                data.append(int(digits, 8))
+                cursor = digit_at
+                continue
+            simple = {
+                "n": 10,
+                "t": 9,
+                "r": 13,
+                "\\": 92,
+                '"': 34,
+                "a": 7,
+                "b": 8,
+                "f": 12,
+                "v": 11,
+            }
+            if nxt in simple:
+                data.append(simple[nxt])
+                cursor += 2
+                continue
+        data.extend(char.encode("utf-8"))
+        cursor += 1
+    return data.decode("utf-8", "surrogateescape"), cursor
+
+
+def _strip_ab_prefix(path: str) -> str:
+    if path == "/dev/null":
+        return path
+    if path.startswith("a/") or path.startswith("b/"):
+        return path[2:]
+    return path
+
+
+def _split_diff_paths(line: str) -> tuple[str, str] | None:
+    if line.startswith("diff --cc ") or line.startswith("diff --combined "):
+        rest = line.split(" ", 2)[2]
+        token, _ = _parse_git_path_token(rest, 0)
+        path = _strip_ab_prefix(token)
+        return path, path
+    if not line.startswith("diff --git "):
+        return None
+    rest = line[len("diff --git ") :]
+    old, index = _parse_git_path_token(rest, 0)
+    if index < len(rest) and rest[index] == " ":
+        index += 1
+    new, _ = _parse_git_path_token(rest, index)
+    return _strip_ab_prefix(old), _strip_ab_prefix(new)
+
+
+def _parse_file_header_path(line: str) -> str:
+    rest = line[4:].split("\t", 1)[0]
+    token, _ = _parse_git_path_token(rest, 0)
+    return _strip_ab_prefix(token)
+
+
+def parse_unified_diff(diff_text: str) -> list[dict]:
+    """Return one record per file in a unified diff.
+
+    ``new_lines`` is the set of new-side line numbers that appear as additions
+    or as context. Those are the lines a walkthrough is allowed to cite.
+    """
+    files: list[dict] = []
+    current: dict | None = None
+    new_line: int | None = None
+
+    def start_file(old: str, new: str, combined: bool) -> None:
+        nonlocal current, new_line
+        current = {
+            "old": old,
+            "new": new,
+            "new_lines": set(),
+            "binary": False,
+            "deleted": False,
+            "combined": combined,
+        }
+        files.append(current)
+        new_line = None
+
+    for line in diff_text.splitlines():
+        paths = _split_diff_paths(line)
+        if paths is not None:
+            start_file(paths[0], paths[1], line.startswith("diff --cc ") or line.startswith("diff --combined "))
+            continue
+        if current is None:
+            continue
+        if line.startswith("deleted file mode"):
+            current["deleted"] = True
+            continue
+        if line.startswith("Binary files ") or line.startswith("GIT binary patch"):
+            current["binary"] = True
+            new_line = None
+            continue
+        if current["binary"]:
+            continue
+        if new_line is None and line.startswith("--- "):
+            current["old"] = _parse_file_header_path(line)
+            continue
+        if new_line is None and line.startswith("+++ "):
+            current["new"] = _parse_file_header_path(line)
+            if current["new"] == "/dev/null":
+                current["deleted"] = True
+            continue
+        if line.startswith("@@@"):
+            current["combined"] = True
+            new_line = None
+            continue
+        hunk = _HUNK_RE.match(line)
+        if hunk:
+            new_line = int(hunk.group("start"))
+            continue
+        if new_line is None or current["combined"]:
+            continue
+        if line.startswith("\\"):
+            continue
+        if line.startswith("+"):
+            current["new_lines"].add(new_line)
+            new_line += 1
+            continue
+        if line.startswith("-"):
+            continue
+        if line.startswith(" "):
+            current["new_lines"].add(new_line)
+            new_line += 1
+    return files
+
+
+def known_paths(files: list[dict]) -> set[str]:
+    paths: set[str] = set()
+    for file in files:
+        if file["new"] and file["new"] != "/dev/null":
+            paths.add(file["new"])
+        if file["old"] and file["old"] != "/dev/null":
+            paths.add(file["old"])
+    return paths
+
+
+def _looks_like_location(path: str) -> bool:
+    if not path or path != path.strip():
+        return False
+    if "://" in path:
+        return False
+    if "/" not in path and "." not in path:
+        return False
+    return True
+
+
+def _blank_ref(raw: str, path: str, start: int | None, end: int | None) -> dict:
+    return {
+        "raw": raw,
+        "path": path,
+        "start": start,
+        "end": end,
+        "fileIndex": None,
+        "status": "unresolved",
+        "jump": "none",
+        "message": None,
+    }
+
+
+def classify_span(content: str, paths: set[str]) -> dict | None:
+    """Return a reference when a code span cites a file or a new-side range."""
+    text = content.strip()
+    match = _LOCATION_RE.match(text)
+    if match:
+        path = match.group("path").strip()
+        if _looks_like_location(path):
+            start = int(match.group("start"))
+            end = int(match.group("end")) if match.group("end") else start
+            return _blank_ref(text, path, start, end)
+    if text in paths:
+        return _blank_ref(text, text, None, None)
+    return None
+
+
+def iter_code_spans(markdown: str) -> list[str]:
+    spans: list[str] = []
+    in_fence = False
+    for line in markdown.split("\n"):
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        for match in _CODE_SPAN_RE.finditer(line):
+            spans.append(match.group(1))
+    return spans
+
+
+def extract_refs(markdown: str, paths: set[str]) -> list[dict]:
+    refs: list[dict] = []
+    for span in iter_code_spans(markdown):
+        ref = classify_span(span, paths)
+        if ref is not None:
+            refs.append(ref)
+    return refs
+
+
+def _slugify(text: str) -> str:
+    slug = text.lower().replace("`", "")
+    slug = re.sub(r"[^a-z0-9]+", "-", slug).strip("-")
+    return slug[:60] or "section"
+
+
+def parse_walkthrough(markdown: str, paths: set[str]) -> dict:
+    text = markdown.replace("\r\n", "\n").replace("\r", "\n")
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    lines = text.split("\n")
+    title: str | None = None
+    title_index: int | None = None
+    section_at: list[tuple[int, str]] = []
+    in_fence = False
+    for index, line in enumerate(lines):
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if title is None and not section_at:
+            heading = _H1_RE.match(line)
+            if heading and not line.lstrip().startswith("##"):
+                title = heading.group(1).strip()
+                title_index = index
+                continue
+        heading = _H2_RE.match(line)
+        if heading:
+            name = _TRAILING_HASHES_RE.sub("", heading.group(1).strip())
+            section_at.append((index, name))
+    if title_index is None:
+        intro_lines = lines[: section_at[0][0]] if section_at else lines
+    else:
+        intro_lines = lines[:title_index] + lines[title_index + 1 : (section_at[0][0] if section_at else len(lines))]
+    intro = "\n".join(intro_lines).strip("\n")
+    used: set[str] = set()
+    sections: list[dict] = []
+    for position, (start, name) in enumerate(section_at):
+        end = section_at[position + 1][0] if position + 1 < len(section_at) else len(lines)
+        body = "\n".join(lines[start + 1 : end]).strip("\n")
+        base = _slugify(name)
+        slug = base
+        suffix = 2
+        while slug in used:
+            slug = f"{base}-{suffix}"
+            suffix += 1
+        used.add(slug)
+        sections.append(
+            {
+                "id": slug,
+                "title": name,
+                "markdown": body,
+                "refs": extract_refs(body, paths),
+            }
+        )
+    return {
+        "title": title or "Diff walkthrough",
+        "intro": intro,
+        "introRefs": extract_refs(intro, paths),
+        "sections": sections,
+    }
+
+
+def _compress_ranges(numbers: set[int]) -> list[list[int]]:
+    if not numbers:
+        return []
+    ordered = sorted(numbers)
+    ranges: list[list[int]] = []
+    start = prev = ordered[0]
+    for number in ordered[1:]:
+        if number == prev + 1:
+            prev = number
+            continue
+        ranges.append([start, prev])
+        start = prev = number
+    ranges.append([start, prev])
+    return ranges
+
+
+def _format_lines(numbers: list[int]) -> str:
+    if not numbers:
+        return ""
+    groups: list[str] = []
+    start = prev = numbers[0]
+    for number in numbers[1:]:
+        if number == prev + 1:
+            prev = number
+            continue
+        groups.append(str(start) if start == prev else f"{start}-{prev}")
+        start = prev = number
+    groups.append(str(start) if start == prev else f"{start}-{prev}")
+    if len(groups) > 6:
+        hidden = len(groups) - 6
+        return ", ".join(groups[:6]) + f", and {hidden} more"
+    return ", ".join(groups)
+
+
+def _matching_indexes(files: list[dict], path: str) -> tuple[list[int], list[int]]:
+    new_hits = [index for index, file in enumerate(files) if file["new"] == path]
+    old_hits = [
+        index
+        for index, file in enumerate(files)
+        if file["old"] == path and file["new"] != path
+    ]
+    return new_hits, old_hits
+
+
+def resolve_ref(ref: dict, files: list[dict]) -> None:
+    if ref["start"] is None:
+        _resolve_file_ref(ref, files)
+        return
+    if ref["end"] < ref["start"] or ref["start"] < 1:
+        ref["status"] = "bad-range"
+        ref["jump"] = "none"
+        ref["message"] = f'{ref["raw"]} is not a valid new-side line range.'
+        return
+    new_hits, old_hits = _matching_indexes(files, ref["path"])
+    renamed = False
+    ambiguous = False
+    if new_hits:
+        index = new_hits[0]
+        ambiguous = len(new_hits) > 1
+    elif old_hits:
+        index = old_hits[0]
+        ambiguous = len(old_hits) > 1
+        file = files[index]
+        if file["deleted"] or file["new"] == "/dev/null":
+            ref["fileIndex"] = index
+            ref["status"] = "deleted"
+            ref["jump"] = "none"
+            ref["message"] = (
+                f'{ref["path"]} was deleted in this diff, so it has no new-side lines.'
+            )
+            return
+        renamed = True
+    else:
+        ref["status"] = "missing-file"
+        ref["jump"] = "none"
+        ref["message"] = f'No file "{ref["path"]}" in this diff.'
+        return
+    file = files[index]
+    ref["fileIndex"] = index
+    if file["binary"]:
+        ref["status"] = "binary"
+        ref["jump"] = "none"
+        ref["message"] = f'{ref["path"]} is a binary file in this diff, so it has no line numbers.'
+        return
+    if file["combined"]:
+        ref["status"] = "combined"
+        ref["jump"] = "none"
+        ref["message"] = (
+            f'{ref["path"]} comes from a combined merge diff. '
+            "Line links are resolved only for ordinary unified diffs."
+        )
+        return
+    present = [number for number in range(ref["start"], ref["end"] + 1) if number in file["new_lines"]]
+    missing = [number for number in range(ref["start"], ref["end"] + 1) if number not in file["new_lines"]]
+    notes: list[str] = []
+    if renamed:
+        notes.append(
+            f'{ref["path"]} was renamed to {file["new"]}. '
+            f'This link follows the new file; cite {file["new"]} next time.'
+        )
+    if ambiguous:
+        notes.append(f'{ref["path"]} appears more than once in this diff. The link uses the first copy.')
+    if not present:
+        ref["jump"] = "none"
+        ref["status"] = "outside"
+        if not file["new_lines"]:
+            detail = (
+                f'{ref["path"]} is in this diff without line text '
+                f'(for example a pure rename or a mode change), so {ref["raw"]} cannot be highlighted.'
+            )
+        else:
+            detail = (
+                f'{ref["raw"]} is outside this diff. '
+                "Reference added lines, or context lines within 3 lines of a change."
+            )
+        if notes:
+            detail = detail + " " + " ".join(notes)
+        ref["message"] = detail
+        return
+    if missing:
+        ref["status"] = "partial"
+        ref["jump"] = "lines"
+        notes.append(
+            f'Some lines in {ref["raw"]} are outside this diff ({_format_lines(missing)}). '
+            "The lines that are present are still highlighted."
+        )
+        ref["message"] = " ".join(notes)
+        return
+    if notes:
+        ref["status"] = "renamed" if renamed else "ambiguous"
+        ref["jump"] = "lines"
+        ref["message"] = " ".join(notes)
+        return
+    ref["status"] = "ok"
+    ref["jump"] = "lines"
+    ref["message"] = None
+
+
+def _resolve_file_ref(ref: dict, files: list[dict]) -> None:
+    new_hits, old_hits = _matching_indexes(files, ref["path"])
+    if new_hits:
+        index = new_hits[0]
+        ambiguous = len(new_hits) > 1
+    elif old_hits:
+        index = old_hits[0]
+        ambiguous = len(old_hits) > 1
+    else:
+        direct = [index for index, file in enumerate(files) if file["old"] == ref["path"]]
+        if not direct:
+            ref["status"] = "missing-file"
+            ref["jump"] = "none"
+            ref["message"] = f'No file "{ref["path"]}" in this diff.'
+            return
+        index = direct[0]
+        ambiguous = len(direct) > 1
+    ref["fileIndex"] = index
+    ref["status"] = "ambiguous" if ambiguous else "file"
+    ref["jump"] = "file"
+    ref["message"] = (
+        f'{ref["path"]} appears more than once in this diff. The link uses the first copy.'
+        if ambiguous
+        else None
+    )
+
+
+def resolve_document(files: list[dict], document: dict) -> None:
+    for ref in document["introRefs"]:
+        resolve_ref(ref, files)
+    for section in document["sections"]:
+        for ref in section["refs"]:
+            resolve_ref(ref, files)
+
+
+def warning_lines(document: dict) -> list[str]:
+    lines: list[str] = []
+    label = document["title"] or "Introduction"
+    for ref in document["introRefs"]:
+        if ref.get("message"):
+            lines.append(f"{label}: {ref['message']}")
+    for section in document["sections"]:
+        for ref in section["refs"]:
+            if ref.get("message"):
+                lines.append(f"{section['title']}: {ref['message']}")
+    return lines
+
+
+def _public_file(file: dict) -> dict:
+    return {
+        "old": file["old"],
+        "new": file["new"],
+        "lines": _compress_ranges(file["new_lines"]),
+        "binary": file["binary"],
+        "deleted": file["deleted"],
+    }
+
+
+def _storage_key(range_spec: str, sections: list[dict]) -> str:
+    identity = range_spec + "\n" + "\n".join(f"{section['id']}\n{section['title']}" for section in sections)
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    return f"diff-walkthrough:{digest}"
+
+
+def build_payload(diff_text: str, markdown: str, range_spec: str, output_format: str) -> dict:
+    files = parse_unified_diff(diff_text)
+    document = parse_walkthrough(markdown, known_paths(files))
+    resolve_document(files, document)
+    return {
+        "title": document["title"],
+        "range": range_spec,
+        "outputFormat": output_format,
+        "storageKey": _storage_key(range_spec, document["sections"]),
+        "intro": document["intro"],
+        "introRefs": document["introRefs"],
+        "sections": document["sections"],
+        "files": [_public_file(file) for file in files],
+        "diff": diff_text,
+        "warnings": warning_lines(document),
+    }
+
+
+def encode_payload(payload: dict) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return raw.replace("<", "\\u003c")
+
+
+def render_html(payload: dict) -> str:
+    return PAGE_TEMPLATE.replace("@@CSS@@", DIFF2HTML_CSS).replace("@@JS@@", DIFF2HTML_JS).replace(
+        "@@PAYLOAD@@", encode_payload(payload)
+    )
+
+
+def git_diff(repo: Path, range_spec: str) -> str:
+    if not repo.exists():
+        die(f"repository not found: {repo}")
+    probe = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0 or probe.stdout.strip() != "true":
+        detail = probe.stderr.strip() or f"not a git repository: {repo}"
+        die(detail)
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--no-color", "--no-ext-diff", "-U3", range_spec],
+        capture_output=True,
+        text=True,
+        errors="replace",
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or "git diff failed"
+        die(detail)
+    return proc.stdout
+
+
+def open_browser(path: Path) -> None:
+    uri = path.resolve().as_uri()
+    try:
+        opened = webbrowser.open(uri)
+    except webbrowser.Error as exc:
+        print(f"Could not open a browser ({exc}). Open this file instead:\n{uri}", file=sys.stderr)
+        return
+    if not opened:
+        print(f"Could not open a browser. Open this file instead:\n{uri}", file=sys.stderr)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="diff-walkthrough",
+        description=(
+            "Write a GitHub-style diff beside a markdown walkthrough and open it "
+            "in the default browser. References use new-side line numbers, for "
+            "example path/File.java:120-140."
+        ),
+    )
+    parser.add_argument(
+        "--range",
+        required=True,
+        dest="range_spec",
+        help="Revision range passed to git diff, such as main...HEAD or COMMIT^..COMMIT.",
+    )
+    parser.add_argument(
+        "--walkthrough",
+        required=True,
+        help="Markdown file whose ## sections cite files and line ranges.",
+    )
+    parser.add_argument(
+        "--repo",
+        default=".",
+        help="Git working tree to diff (default: the current directory).",
+    )
+    parser.add_argument(
+        "--side-by-side",
+        action="store_true",
+        help="Render the diff in two columns. The default is a single unified column.",
+    )
+    parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Write the HTML file without opening a browser.",
+    )
+    parser.add_argument(
+        "--out",
+        default="diff-walkthrough.html",
+        help="Output HTML path (default: diff-walkthrough.html in the current directory).",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
+    walkthrough_path = Path(args.walkthrough)
+    if not walkthrough_path.is_file():
+        die(f"walkthrough not found: {walkthrough_path}")
+    try:
+        markdown = walkthrough_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        die(f"could not read {walkthrough_path}: {exc}")
+    diff_text = git_diff(Path(args.repo).expanduser().resolve(), args.range_spec)
+    output_format = "side-by-side" if args.side_by_side else "line-by-line"
+    payload = build_payload(diff_text, markdown, args.range_spec, output_format)
+    out = Path(args.out).expanduser()
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(render_html(payload), encoding="utf-8")
+    except OSError as exc:
+        die(f"could not write {out}: {exc}")
+    ref_count = len(payload["introRefs"]) + sum(len(section["refs"]) for section in payload["sections"])
+    print(f"Wrote {out.resolve()}")
+    print(
+        f"{len(payload['sections'])} section(s), {ref_count} reference(s), "
+        f"{len(payload['warnings'])} warning(s)."
+    )
+    for warning in payload["warnings"]:
+        print(f"warning: {warning}", file=sys.stderr)
+    if not args.no_open:
+        open_browser(out)
+
+
+PAGE_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Diff walkthrough</title>
+<link rel="stylesheet" href="@@CSS@@">
+<style>
+  :root {
+    color-scheme: light;
+    --ink: #1f2328;
+    --muted: #656d76;
+    --line: #d0d7de;
+    --canvas: #ffffff;
+    --soft: #f6f8fa;
+    --blue: #0969da;
+    --blue-soft: #ddf4ff;
+    --green: #1a7f37;
+    --amber: #9a6700;
+    --amber-bg: #fff8c5;
+    --amber-line: #d4a72c;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    overflow: hidden;
+    color: var(--ink);
+    background: var(--canvas);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  .app { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+  .topbar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    height: 52px;
+    padding: 0 16px;
+    background: var(--soft);
+    border-bottom: 1px solid var(--line);
+  }
+  .topbar-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .product { font-weight: 600; white-space: nowrap; }
+  .range-chip {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 2px 8px;
+    max-width: 48vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .topbar-meta { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+  .attention {
+    color: var(--amber);
+    background: var(--amber-bg);
+    border: 1px solid var(--amber-line);
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .reviewed-count { color: var(--green); font-size: 13px; font-weight: 600; white-space: nowrap; }
+  .panes { flex: 1 1 auto; display: flex; min-height: 0; }
+  .walk-pane, .diff-pane { min-height: 0; min-width: 0; overflow: auto; }
+  .walk-pane {
+    flex: 0 0 420px;
+    width: 420px;
+    background: var(--canvas);
+    border-right: 1px solid var(--line);
+    padding: 20px 22px 85vh;
+  }
+  .diff-pane { flex: 1 1 auto; background: var(--soft); padding: 12px 12px 90vh; }
+  .walk-title { font-size: 22px; line-height: 1.25; margin: 0 0 10px; }
+  .walk-intro { font-size: 14px; line-height: 1.55; }
+  .walk-section {
+    margin-top: 16px;
+    padding: 8px 8px 10px 12px;
+    border-left: 3px solid transparent;
+    border-radius: 0 8px 8px 0;
+  }
+  .walk-section.is-active { background: var(--soft); border-left-color: var(--blue); }
+  .walk-section.is-reviewed .walk-body { opacity: 0.62; }
+  .walk-section.is-reviewed:not(.is-active) { border-left-color: var(--green); }
+  .walk-section-head { display: flex; gap: 10px; align-items: flex-start; }
+  .walk-section-head h2 { margin: 0; font-size: 16px; line-height: 1.35; font-weight: 600; flex: 1; }
+  .walk-reviewed { accent-color: var(--green); width: 16px; height: 16px; margin: 3px 0 0; flex: 0 0 auto; }
+  .walk-jump {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+  }
+  .walk-jump:hover { color: var(--blue); }
+  .walk-jump.is-static { cursor: default; }
+  .walk-jump.is-static:hover { color: inherit; }
+  .walk-index { color: var(--blue); font-size: 12px; font-weight: 700; min-width: 1.2em; }
+  .walk-body, .walk-intro { overflow-wrap: break-word; }
+  .walk-body p, .walk-intro p { margin: 8px 0; }
+  .walk-body ul, .walk-body ol, .walk-intro ul, .walk-intro ol { margin: 8px 0; padding-left: 1.25em; }
+  .walk-body h3, .walk-intro h3 { font-size: 15px; margin: 14px 0 6px; }
+  .walk-pane code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    background: #eff1f3;
+    padding: 0.1em 0.35em;
+    border-radius: 4px;
+  }
+  .walk-pane pre {
+    background: var(--soft);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 10px 12px;
+    overflow: auto;
+  }
+  .walk-pane pre code { background: none; padding: 0; }
+  .ref-link {
+    display: inline;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--blue);
+    background: var(--blue-soft);
+    border: 1px solid #54aeff66;
+    border-radius: 6px;
+    padding: 0 6px;
+    cursor: pointer;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .ref-link:hover { background: #b6e3ff; }
+  .ref-link.is-broken {
+    color: var(--amber);
+    background: #fff1e5;
+    border-color: var(--amber-line);
+  }
+  .walk-warning {
+    margin: 8px 0 0;
+    padding: 8px 10px;
+    background: var(--amber-bg);
+    border: 1px solid var(--amber-line);
+    border-radius: 6px;
+    color: #4d2d00;
+    font-size: 13px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+  .walk-loading, .walk-load-error, .walk-empty { margin: 8px; color: var(--muted); }
+  .walk-load-error {
+    color: #4d2d00;
+    background: var(--amber-bg);
+    border: 1px solid var(--amber-line);
+    border-radius: 6px;
+    padding: 10px 12px;
+  }
+  .walk-backs { display: inline-flex; gap: 3px; margin-right: 6px; vertical-align: text-bottom; }
+  .walk-back {
+    appearance: none;
+    border: 0;
+    background: var(--blue);
+    color: #fff;
+    font: 700 10px/16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  .walk-back:hover { background: #0550ae; }
+  .d2h-file-header .walk-backs { margin-right: 8px; }
+  tr.walk-hit > td { box-shadow: inset 0 0 0 9999px rgba(9, 105, 218, 0.16); }
+  tr.walk-hit-start > td { box-shadow: inset 3px 0 0 #0969da, inset 0 0 0 9999px rgba(9, 105, 218, 0.2); }
+  tr.walk-hit-end > td { box-shadow: inset 0 -2px 0 #0969da, inset 0 0 0 9999px rgba(9, 105, 218, 0.16); }
+  tr.walk-hit-start.walk-hit-end > td { box-shadow: inset 3px 0 0 #0969da, inset 0 0 0 9999px rgba(9, 105, 218, 0.22); }
+  .d2h-file-wrapper.walk-file-focus > .d2h-file-header {
+    box-shadow: inset 3px 0 0 #0969da, inset 0 0 0 9999px rgba(9, 105, 218, 0.12);
+  }
+  .ref-link:focus-visible, .walk-back:focus-visible, .walk-jump:focus-visible, .walk-reviewed:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 2px;
+  }
+  .walk-flash { animation: walk-flash 0.9s ease; }
+  @keyframes walk-flash {
+    0% { background: #ddf4ff; }
+    100% { background: transparent; }
+  }
+  @media (max-width: 860px) {
+    .walk-pane { flex-basis: 320px; width: 320px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="topbar-title">
+      <span class="product">Diff walkthrough</span>
+      <code class="range-chip" id="range-chip"></code>
+    </div>
+    <div class="topbar-meta">
+      <span class="attention" id="attention" hidden></span>
+      <span class="reviewed-count" id="reviewed-count"></span>
+      <button type="button" id="clear-reviewed" hidden>Clear review marks</button>
+    </div>
+  </header>
+  <div class="panes">
+    <aside class="walk-pane" id="walk" aria-label="Walkthrough">
+      <p class="walk-loading">Loading walkthrough...</p>
+    </aside>
+    <main class="diff-pane" id="diff" aria-label="Diff">
+      <p class="walk-loading">Loading diff...</p>
+    </main>
+  </div>
+</div>
+<noscript>
+  <p class="walk-load-error">This page needs JavaScript to render the walkthrough and the diff.</p>
+</noscript>
+<script type="application/json" id="walk-data">@@PAYLOAD@@</script>
+<script src="@@JS@@"></script>
+<script>
+"use strict";
+
+var DATA = JSON.parse(document.getElementById("walk-data").textContent);
+var walkPane = document.getElementById("walk");
+var diffPane = document.getElementById("diff");
+var sections = [];
+var sectionById = {};
+var wrappers = [];
+var lineMaps = [];
+var diffReady = false;
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function scrollBehavior(instant) {
+  if (instant || document.documentElement.getAttribute("data-instant") === "1") {
+    return "auto";
+  }
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    return "auto";
+  }
+  return "smooth";
+}
+
+function scrollPaneTo(pane, el, instant) {
+  var paneRect = pane.getBoundingClientRect();
+  var elRect = el.getBoundingClientRect();
+  var next = pane.scrollTop + (elRect.top - paneRect.top) - 56;
+  if (next < 0) {
+    next = 0;
+  }
+  pane.scrollTo({top: next, behavior: scrollBehavior(instant)});
+}
+
+function flash(el) {
+  if (!el) {
+    return;
+  }
+  el.classList.remove("walk-flash");
+  void el.offsetWidth;
+  el.classList.add("walk-flash");
+}
+
+function loadState() {
+  try {
+    var raw = localStorage.getItem(DATA.storageKey);
+    if (!raw) {
+      return {};
+    }
+    var parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return {};
+    }
+    return parsed;
+  } catch (err) {
+    return {};
+  }
+}
+
+function saveState(state) {
+  try {
+    if (Object.keys(state).length) {
+      localStorage.setItem(DATA.storageKey, JSON.stringify(state));
+    } else {
+      localStorage.removeItem(DATA.storageKey);
+    }
+  } catch (err) {
+    return;
+  }
+}
+
+function clearReviewed() {
+  saveState({});
+  for (var box of document.querySelectorAll(".walk-reviewed:checked")) {
+    box.checked = false;
+    box.closest(".walk-section").classList.remove("is-reviewed");
+  }
+  updateReviewed();
+}
+
+function updateReviewed() {
+  var boxes = document.querySelectorAll(".walk-reviewed");
+  var done = 0;
+  var index;
+  for (index = 0; index < boxes.length; index += 1) {
+    if (boxes[index].checked) {
+      done += 1;
+    }
+  }
+  var el = document.getElementById("reviewed-count");
+  var clear = document.getElementById("clear-reviewed");
+  clear.hidden = !boxes.length;
+  clear.disabled = !done && !Object.keys(loadState()).length;
+  if (!boxes.length) {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+  el.textContent = "Reviewed " + done + "/" + boxes.length;
+}
+
+function updateAttention() {
+  var unresolved = 0;
+  var s;
+  var r;
+  for (s = 0; s < sections.length; s += 1) {
+    for (r = 0; r < sections[s].refs.length; r += 1) {
+      var ref = sections[s].refs[r];
+      var quiet = (ref.status === "ok" || ref.status === "file") && ref.jump !== "none";
+      if (!quiet) {
+        unresolved += 1;
+      }
+    }
+  }
+  var el = document.getElementById("attention");
+  if (!unresolved) {
+    el.hidden = true;
+    el.textContent = "";
+    return;
+  }
+  el.hidden = false;
+  el.textContent = unresolved === 1 ? "1 reference needs attention" : unresolved + " references need attention";
+}
+
+function isFence(line) {
+  return /^ {0,3}```/.test(line);
+}
+
+function isBlockStart(line) {
+  if (isFence(line)) {
+    return true;
+  }
+  if (/^ {0,3}#{1,6}\s/.test(line)) {
+    return true;
+  }
+  if (/^ {0,3}>\s?/.test(line)) {
+    return true;
+  }
+  if (/^ {0,3}[-*]\s/.test(line)) {
+    return true;
+  }
+  if (/^ {0,3}\d+\.\s/.test(line)) {
+    return true;
+  }
+  if (/^ {0,3}([-*_])\1{2,}\s*$/.test(line)) {
+    return true;
+  }
+  return false;
+}
+
+function safeUrl(url) {
+  var trimmed = String(url || "").trim();
+  if (/^(https?:\/\/|mailto:)/i.test(trimmed)) {
+    return trimmed;
+  }
+  return "";
+}
+
+function renderCode(content, refs, cursor, sectionId) {
+  var text = content.trim();
+  var ref = refs[cursor.n];
+  if (ref && ref.raw === text) {
+    var index = cursor.n;
+    cursor.n += 1;
+    var label = escapeHtml(ref.raw).split("/").join("/<wbr>");
+    return '<button type="button" class="ref-link" data-section-id="' + escapeHtml(sectionId) + '" data-ref-index="' + index + '">' + label + "</button>";
+  }
+  return "<code>" + escapeHtml(content) + "</code>";
+}
+
+function renderInline(raw, refs, cursor, sectionId) {
+  var html = "";
+  var i = 0;
+  while (i < raw.length) {
+    if (raw.charAt(i) === "`") {
+      var endCode = raw.indexOf("`", i + 1);
+      if (endCode === -1) {
+        html += escapeHtml(raw.slice(i));
+        break;
+      }
+      html += renderCode(raw.slice(i + 1, endCode), refs, cursor, sectionId);
+      i = endCode + 1;
+      continue;
+    }
+    if (raw.startsWith("**", i)) {
+      var endBold = raw.indexOf("**", i + 2);
+      if (endBold !== -1) {
+        html += "<strong>" + renderInline(raw.slice(i + 2, endBold), refs, cursor, sectionId) + "</strong>";
+        i = endBold + 2;
+        continue;
+      }
+    }
+    if (raw.charAt(i) === "*" && raw.charAt(i + 1) !== "*") {
+      var endEm = raw.indexOf("*", i + 1);
+      if (endEm > i + 1) {
+        html += "<em>" + renderInline(raw.slice(i + 1, endEm), refs, cursor, sectionId) + "</em>";
+        i = endEm + 1;
+        continue;
+      }
+    }
+    if (raw.charAt(i) === "[") {
+      var labelEnd = raw.indexOf("](", i + 1);
+      if (labelEnd !== -1) {
+        var urlEnd = raw.indexOf(")", labelEnd + 2);
+        if (urlEnd !== -1) {
+          var label = raw.slice(i + 1, labelEnd);
+          var href = safeUrl(raw.slice(labelEnd + 2, urlEnd));
+          var inner = renderInline(label, refs, cursor, sectionId);
+          if (href) {
+            html += '<a href="' + escapeHtml(href) + '" rel="noreferrer">' + inner + "</a>";
+          } else {
+            html += inner;
+          }
+          i = urlEnd + 1;
+          continue;
+        }
+      }
+    }
+    var next = raw.length;
+    var specials = ["`", "*", "["];
+    var s;
+    for (s = 0; s < specials.length; s += 1) {
+      var at = raw.indexOf(specials[s], i);
+      if (raw.charAt(i) === specials[s]) {
+        at = i;
+      }
+      if (at !== -1 && at >= i && at < next) {
+        if (at === i) {
+          next = i + 1;
+        } else {
+          next = at;
+        }
+      }
+    }
+    html += escapeHtml(raw.slice(i, next));
+    i = next;
+  }
+  return html;
+}
+
+function renderMarkdown(src, refs, cursor, sectionId) {
+  var lines = String(src || "").replace(/\r\n/g, "\n").split("\n");
+  var html = [];
+  var i = 0;
+  while (i < lines.length) {
+    var line = lines[i];
+    if (isFence(line)) {
+      var buf = [];
+      i += 1;
+      while (i < lines.length && !isFence(lines[i])) {
+        buf.push(lines[i]);
+        i += 1;
+      }
+      if (i < lines.length) {
+        i += 1;
+      }
+      html.push("<pre><code>" + escapeHtml(buf.join("\n")) + "</code></pre>");
+      continue;
+    }
+    if (line.trim() === "") {
+      i += 1;
+      continue;
+    }
+    var heading = /^ {0,3}(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) {
+      var level = heading[1].length;
+      if (level < 3) {
+        level = 3;
+      }
+      html.push("<h" + level + ">" + renderInline(heading[2], refs, cursor, sectionId) + "</h" + level + ">");
+      i += 1;
+      continue;
+    }
+    if (/^ {0,3}([-*_])\1{2,}\s*$/.test(line)) {
+      html.push("<hr>");
+      i += 1;
+      continue;
+    }
+    if (/^ {0,3}>\s?/.test(line)) {
+      var quoted = [];
+      while (i < lines.length && /^ {0,3}>\s?/.test(lines[i])) {
+        quoted.push(lines[i].replace(/^ {0,3}>\s?/, ""));
+        i += 1;
+      }
+      html.push("<blockquote>" + renderMarkdown(quoted.join("\n"), refs, cursor, sectionId) + "</blockquote>");
+      continue;
+    }
+    if (/^ {0,3}[-*]\s+/.test(line)) {
+      var items = [];
+      while (i < lines.length && /^ {0,3}[-*]\s+/.test(lines[i])) {
+        var item = lines[i].replace(/^ {0,3}[-*]\s+/, "");
+        items.push("<li>" + renderInline(item, refs, cursor, sectionId) + "</li>");
+        i += 1;
+      }
+      html.push("<ul>" + items.join("") + "</ul>");
+      continue;
+    }
+    if (/^ {0,3}\d+\.\s+/.test(line)) {
+      var ordered = [];
+      while (i < lines.length && /^ {0,3}\d+\.\s+/.test(lines[i])) {
+        var text = lines[i].replace(/^ {0,3}\d+\.\s+/, "");
+        ordered.push("<li>" + renderInline(text, refs, cursor, sectionId) + "</li>");
+        i += 1;
+      }
+      html.push("<ol>" + ordered.join("") + "</ol>");
+      continue;
+    }
+    var para = [];
+    while (i < lines.length && lines[i].trim() !== "" && !isBlockStart(lines[i])) {
+      para.push(lines[i].trim());
+      i += 1;
+    }
+    html.push("<p>" + renderInline(para.join(" "), refs, cursor, sectionId) + "</p>");
+  }
+  return html.join("\n");
+}
+
+function bindReview(section, input, article) {
+  var state = loadState();
+  if (state[section.id]) {
+    input.checked = true;
+    article.classList.add("is-reviewed");
+  }
+  input.addEventListener("change", function () {
+    var current = loadState();
+    if (input.checked) {
+      current[section.id] = true;
+    } else {
+      delete current[section.id];
+    }
+    saveState(current);
+    article.classList.toggle("is-reviewed", input.checked);
+    updateReviewed();
+  });
+}
+
+function showWarnings(section) {
+  var host = section.warningsHost;
+  if (!host) {
+    return;
+  }
+  host.textContent = "";
+  var i;
+  for (i = 0; i < section.warningTexts.length; i += 1) {
+    var paragraph = document.createElement("p");
+    paragraph.className = "walk-warning";
+    paragraph.textContent = section.warningTexts[i];
+    host.appendChild(paragraph);
+  }
+}
+
+function renderWalk() {
+  walkPane.textContent = "";
+  var title = document.createElement("h1");
+  title.className = "walk-title";
+  title.id = "section-intro";
+  title.textContent = DATA.title || "Diff walkthrough";
+  walkPane.appendChild(title);
+  var introHost = document.createElement("div");
+  introHost.className = "walk-intro";
+  var introWarnings = document.createElement("div");
+  introWarnings.className = "walk-warnings";
+  if ((DATA.intro || "").trim() || (DATA.introRefs || []).length) {
+    var introCursor = {n: 0};
+    introHost.innerHTML = renderMarkdown(DATA.intro || "", DATA.introRefs || [], introCursor, "intro");
+    walkPane.appendChild(introHost);
+    walkPane.appendChild(introWarnings);
+  }
+  var introSection = {
+    id: "intro",
+    title: DATA.title || "Introduction",
+    refs: DATA.introRefs || [],
+    el: introHost,
+    headingButton: null,
+    warningsHost: introWarnings,
+    warningTexts: [],
+    number: "",
+    primary: null,
+    review: false
+  };
+  if (introSection.refs.length) {
+    sections.push(introSection);
+    sectionById.intro = introSection;
+  }
+  var index;
+  for (index = 0; index < DATA.sections.length; index += 1) {
+    var source = DATA.sections[index];
+    var article = document.createElement("article");
+    article.className = "walk-section";
+    article.id = "section-" + source.id;
+    var head = document.createElement("div");
+    head.className = "walk-section-head";
+    var input = document.createElement("input");
+    input.type = "checkbox";
+    input.className = "walk-reviewed";
+    input.setAttribute("aria-label", "Mark reviewed: " + source.title);
+    var heading = document.createElement("h2");
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "walk-jump";
+    button.setAttribute("data-primary", "1");
+    button.setAttribute("data-section-id", source.id);
+    var number = document.createElement("span");
+    number.className = "walk-index";
+    number.textContent = String(index + 1);
+    var label = document.createElement("span");
+    label.className = "walk-label";
+    label.textContent = source.title;
+    button.appendChild(number);
+    button.appendChild(label);
+    heading.appendChild(button);
+    head.appendChild(input);
+    head.appendChild(heading);
+    var warnings = document.createElement("div");
+    warnings.className = "walk-warnings";
+    var body = document.createElement("div");
+    body.className = "walk-body";
+    var cursor = {n: 0};
+    body.innerHTML = renderMarkdown(source.markdown || "", source.refs || [], cursor, source.id);
+    article.appendChild(head);
+    article.appendChild(warnings);
+    article.appendChild(body);
+    walkPane.appendChild(article);
+    var section = {
+      id: source.id,
+      title: source.title,
+      refs: source.refs || [],
+      el: article,
+      headingButton: button,
+      warningsHost: warnings,
+      warningTexts: [],
+      number: String(index + 1),
+      primary: null,
+      review: true,
+      renderedRefs: cursor.n
+    };
+    sections.push(section);
+    sectionById[section.id] = section;
+    bindReview(section, input, article);
+  }
+  updateReviewed();
+}
+
+function diffConstructor() {
+  if (typeof Diff2HtmlUI === "function") {
+    return Diff2HtmlUI;
+  }
+  if (typeof Diff2HtmlUI === "object" && Diff2HtmlUI && typeof Diff2HtmlUI.Diff2HtmlUI === "function") {
+    return Diff2HtmlUI.Diff2HtmlUI;
+  }
+  return null;
+}
+
+function drawDiff() {
+  if (!String(DATA.diff || "").trim()) {
+    diffPane.innerHTML = '<p class="walk-empty">This range has no diff.</p>';
+    return;
+  }
+  var Ctor = diffConstructor();
+  if (!Ctor) {
+    diffPane.innerHTML = '<p class="walk-load-error">Could not load diff2html from the CDN. Check the network connection and reload.</p>';
+    return;
+  }
+  try {
+    var ui = new Ctor(diffPane, DATA.diff, {
+      drawFileList: true,
+      fileListToggle: true,
+      fileListStartVisible: true,
+      fileContentToggle: true,
+      matching: "lines",
+      outputFormat: DATA.outputFormat || "line-by-line",
+      highlight: true,
+      colorScheme: "light",
+      stickyFileHeaders: true,
+      synchronisedScroll: true
+    });
+    ui.draw();
+    diffReady = true;
+  } catch (err) {
+    diffPane.innerHTML = '<p class="walk-load-error">The diff viewer failed: ' + escapeHtml(err && err.message ? err.message : err) + "</p>";
+  }
+}
+
+function parseLineNumber(text) {
+  var trimmed = String(text || "").replace(/\u200b/g, "").trim();
+  if (!/^\d+$/.test(trimmed)) {
+    return null;
+  }
+  return parseInt(trimmed, 10);
+}
+
+function indexWrapper(wrapper) {
+  var map = new Map();
+  var sides = wrapper.querySelectorAll(".d2h-file-side-diff");
+  var sideBySide = sides.length >= 2;
+  var root = sideBySide ? sides[1] : wrapper;
+  var rows = root.querySelectorAll("tr");
+  var i;
+  for (i = 0; i < rows.length; i += 1) {
+    var tr = rows[i];
+    var number = null;
+    if (sideBySide) {
+      var cell = tr.querySelector("td.d2h-code-side-linenumber");
+      number = cell ? parseLineNumber(cell.textContent) : null;
+    } else {
+      var node = tr.querySelector(".line-num2");
+      number = node ? parseLineNumber(node.textContent) : null;
+    }
+    if (number === null || map.has(number)) {
+      continue;
+    }
+    tr.setAttribute("data-line", String(number));
+    map.set(number, tr);
+  }
+  return map;
+}
+
+function fileLabel(wrapper) {
+  var el = wrapper.querySelector(".d2h-file-name");
+  if (!el) {
+    return "";
+  }
+  return el.textContent.replace(/\s+/g, " ").trim();
+}
+
+function baseName(path) {
+  if (!path) {
+    return "";
+  }
+  var parts = path.split("/");
+  return parts[parts.length - 1];
+}
+
+function candidatePaths(file) {
+  var paths = [];
+  if (file.new && file.new !== "/dev/null") {
+    paths.push(file.new);
+  }
+  if (file.old && file.old !== "/dev/null") {
+    paths.push(file.old);
+  }
+  return paths;
+}
+
+function nameMatches(wrapper, file, basenameOk) {
+  var label = fileLabel(wrapper);
+  var paths = candidatePaths(file);
+  var i;
+  for (i = 0; i < paths.length; i += 1) {
+    if (label === paths[i]) {
+      return true;
+    }
+  }
+  if (!basenameOk) {
+    return false;
+  }
+  for (i = 0; i < paths.length; i += 1) {
+    var base = baseName(paths[i]);
+    if (!base) {
+      continue;
+    }
+    if (label === base || label.indexOf("/" + base) !== -1 || label.indexOf(base) !== -1) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function bindFiles(fileList) {
+  var nodes = Array.prototype.slice.call(document.querySelectorAll("#diff .d2h-file-wrapper"));
+  var bound = new Array(fileList.length);
+  var used = {};
+  var i;
+  for (i = 0; i < fileList.length; i += 1) {
+    if (i < nodes.length && nameMatches(nodes[i], fileList[i], false)) {
+      bound[i] = nodes[i];
+      used[i] = true;
+    }
+  }
+  var n;
+  for (n = 0; n < fileList.length; n += 1) {
+    if (bound[n]) {
+      continue;
+    }
+    var w;
+    for (w = 0; w < nodes.length; w += 1) {
+      if (used[w]) {
+        continue;
+      }
+      if (nameMatches(nodes[w], fileList[n], true)) {
+        bound[n] = nodes[w];
+        used[w] = true;
+        break;
+      }
+    }
+  }
+  return bound;
+}
+
+function annotate(section) {
+  var warnings = [];
+  var buttons = section.el ? section.el.querySelectorAll(".ref-link") : [];
+  if (buttons.length !== section.refs.length) {
+    warnings.push("The walkthrough view could not line up every reference. Expected " + section.refs.length + " links and found " + buttons.length + ".");
+  }
+  var i;
+  for (i = 0; i < section.refs.length; i += 1) {
+    var ref = section.refs[i];
+    ref.rows = [];
+    ref.wrapper = null;
+    if (ref.fileIndex !== null && ref.fileIndex !== undefined) {
+      ref.wrapper = wrappers[ref.fileIndex] || null;
+    }
+    if (ref.jump === "lines") {
+      if (!ref.wrapper || ref.start === null || ref.start === undefined) {
+        ref.jump = "none";
+        warnings.push(ref.message || (ref.raw + " could not be highlighted in the rendered diff."));
+      } else {
+        var map = lineMaps[ref.fileIndex];
+        var line;
+        for (line = ref.start; line <= ref.end; line += 1) {
+          if (map && map.has(line)) {
+            ref.rows.push({line: line, tr: map.get(line)});
+          }
+        }
+        if (!ref.rows.length) {
+          ref.jump = "none";
+          var extra = ref.raw + " is in the diff data, but the rendered view has no matching line to highlight.";
+          warnings.push(ref.message ? ref.message + " " + extra : extra);
+        } else if (ref.message) {
+          warnings.push(ref.message);
+        }
+      }
+    } else if (ref.jump === "file") {
+      if (!ref.wrapper) {
+        ref.jump = "none";
+        warnings.push(ref.message || ("No rendered file for " + ref.raw + "."));
+      } else if (ref.message) {
+        warnings.push(ref.message);
+      }
+    } else if (ref.message) {
+      warnings.push(ref.message);
+    }
+    if (buttons[i] && ref.jump === "none") {
+      buttons[i].classList.add("is-broken");
+    }
+  }
+  section.primary = null;
+  for (i = 0; i < section.refs.length; i += 1) {
+    if (section.refs[i].jump === "lines" || section.refs[i].jump === "file") {
+      section.primary = section.refs[i];
+      break;
+    }
+  }
+  if (!section.primary && section.headingButton) {
+    section.headingButton.classList.add("is-static");
+  }
+  section.warningTexts = warnings;
+  showWarnings(section);
+}
+
+function clearHighlights() {
+  var nodes = document.querySelectorAll(".walk-hit, .walk-file-focus");
+  var i;
+  for (i = 0; i < nodes.length; i += 1) {
+    nodes[i].classList.remove("walk-hit", "walk-hit-start", "walk-hit-end", "walk-file-focus");
+  }
+}
+
+function expandWrapper(wrapper) {
+  if (!wrapper) {
+    return;
+  }
+  var bodies = wrapper.querySelectorAll(".d2h-files-diff.d2h-d-none, .d2h-file-diff.d2h-d-none");
+  var i;
+  for (i = 0; i < bodies.length; i += 1) {
+    bodies[i].classList.remove("d2h-d-none");
+  }
+  var label = wrapper.querySelector(".d2h-file-collapse");
+  if (label) {
+    label.classList.remove("d2h-selected");
+  }
+  var input = wrapper.querySelector(".d2h-file-collapse-input");
+  if (input) {
+    input.checked = false;
+  }
+}
+
+function applyHighlight(ref, scrollDiff, instant) {
+  clearHighlights();
+  if (!ref || ref.jump === "none") {
+    return;
+  }
+  expandWrapper(ref.wrapper);
+  if (ref.jump === "file") {
+    ref.wrapper.classList.add("walk-file-focus");
+    if (scrollDiff) {
+      scrollPaneTo(diffPane, ref.wrapper, instant);
+    }
+    return;
+  }
+  var rows = ref.rows || [];
+  var i;
+  for (i = 0; i < rows.length; i += 1) {
+    rows[i].tr.classList.add("walk-hit");
+  }
+  if (!rows.length) {
+    return;
+  }
+  rows[0].tr.classList.add("walk-hit-start");
+  rows[rows.length - 1].tr.classList.add("walk-hit-end");
+  var side = rows[0].tr.closest(".d2h-file-side-diff");
+  if (side) {
+    side.scrollLeft = 0;
+  }
+  if (scrollDiff) {
+    scrollPaneTo(diffPane, rows[0].tr, instant);
+  }
+}
+
+function setActive(section) {
+  var i;
+  for (i = 0; i < sections.length; i += 1) {
+    if (!sections[i].review) {
+      continue;
+    }
+    sections[i].el.classList.toggle("is-active", sections[i] === section);
+  }
+}
+
+function activate(section, ref, scrollDiff, scrollWalk, instant) {
+  if (section && section.review) {
+    setActive(section);
+  }
+  if (!ref || ref.jump === "none") {
+    flash(section ? section.warningsHost : null);
+    if (scrollWalk && section && section.el) {
+      scrollPaneTo(walkPane, section.el, instant);
+    }
+    return;
+  }
+  applyHighlight(ref, scrollDiff, instant);
+  if (scrollWalk && section && section.el) {
+    scrollPaneTo(walkPane, section.review ? section.el : document.getElementById("section-intro"), instant);
+  }
+}
+
+function makeBadge(section, ref) {
+  var button = document.createElement("button");
+  button.type = "button";
+  button.className = "walk-back";
+  button.textContent = section.number || "i";
+  button.title = "Walkthrough: " + section.title;
+  button.setAttribute("data-section-id", section.id);
+  button.addEventListener("click", function (event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (section.review) {
+      setActive(section);
+    }
+    flash(section.el);
+    var target = section.review ? section.el : document.getElementById("section-intro");
+    scrollPaneTo(walkPane, target, false);
+    applyHighlight(ref, false, false);
+  });
+  return button;
+}
+
+function addBadges() {
+  var s;
+  for (s = 0; s < sections.length; s += 1) {
+    var section = sections[s];
+    var r;
+    for (r = 0; r < section.refs.length; r += 1) {
+      var ref = section.refs[r];
+      var button = makeBadge(section, ref);
+      if (ref.jump === "lines" && ref.rows && ref.rows.length) {
+        var line = ref.rows[0].tr.querySelector(".d2h-code-side-line, .d2h-code-line");
+        if (!line) {
+          continue;
+        }
+        var holder = line.querySelector(":scope > .walk-backs");
+        if (!holder) {
+          holder = document.createElement("span");
+          holder.className = "walk-backs";
+          line.insertBefore(holder, line.firstChild);
+        }
+        holder.appendChild(button);
+      } else if (ref.jump === "file" && ref.wrapper) {
+        var name = ref.wrapper.querySelector(".d2h-file-name");
+        if (!name || !name.parentNode) {
+          continue;
+        }
+        var fileHolder = name.parentNode.querySelector(":scope > .walk-backs");
+        if (!fileHolder) {
+          fileHolder = document.createElement("span");
+          fileHolder.className = "walk-backs";
+          name.parentNode.insertBefore(fileHolder, name);
+        }
+        fileHolder.appendChild(button);
+      }
+    }
+  }
+}
+
+function onWalkClick(event) {
+  var button = event.target.closest("button");
+  if (!button || !walkPane.contains(button)) {
+    return;
+  }
+  var sectionId = button.getAttribute("data-section-id");
+  if (!sectionId || !sectionById[sectionId]) {
+    return;
+  }
+  var section = sectionById[sectionId];
+  if (button.hasAttribute("data-primary")) {
+    if (section.primary) {
+      activate(section, section.primary, true, false, false);
+    } else {
+      flash(section.warningsHost);
+    }
+    return;
+  }
+  if (!button.hasAttribute("data-ref-index")) {
+    return;
+  }
+  var ref = section.refs[Number(button.getAttribute("data-ref-index"))];
+  activate(section, ref, true, false, false);
+}
+
+function initialSectionId() {
+  var params = new URLSearchParams(window.location.search);
+  var fromQuery = params.get("section");
+  if (fromQuery && sectionById[fromQuery]) {
+    return fromQuery;
+  }
+  var hash = decodeURIComponent((window.location.hash || "").replace(/^#/, ""));
+  if (hash && sectionById[hash]) {
+    return hash;
+  }
+  return "";
+}
+
+function nearTop(pane, el) {
+  if (!el) {
+    return false;
+  }
+  var paneRect = pane.getBoundingClientRect();
+  var rect = el.getBoundingClientRect();
+  var delta = rect.top - paneRect.top;
+  return delta >= -1 && delta <= 160;
+}
+
+function runAutotest() {
+  document.documentElement.setAttribute("data-instant", "1");
+  var report = {scroll: {}, files: [], sections: [], warnings: []};
+  walkPane.scrollTop = 0;
+  diffPane.scrollTop = 0;
+  diffPane.scrollTop = 80;
+  var diffMoved = diffPane.scrollTop > 40;
+  var walkStill = walkPane.scrollTop === 0;
+  walkPane.scrollTop = 50;
+  var walkMoved = walkPane.scrollTop > 20;
+  var diffStill = diffPane.scrollTop > 40;
+  report.scroll = {diffMoved: diffMoved, walkMoved: walkMoved, walkStill: walkStill, diffStill: diffStill};
+  walkPane.scrollTop = 0;
+  diffPane.scrollTop = 0;
+  var f;
+  for (f = 0; f < (DATA.files || []).length; f += 1) {
+    report.files.push({
+      path: DATA.files[f].new,
+      bound: Boolean(wrappers[f]),
+      lines: lineMaps[f] ? lineMaps[f].size : 0
+    });
+  }
+  var s;
+  for (s = 0; s < sections.length; s += 1) {
+    var section = sections[s];
+    var refs = [];
+    var r;
+    for (r = 0; r < section.refs.length; r += 1) {
+      var ref = section.refs[r];
+      activate(section, ref, true, false, true);
+      var hitLines = [];
+      var hits = document.querySelectorAll("tr.walk-hit");
+      var h;
+      for (h = 0; h < hits.length; h += 1) {
+        hitLines.push(Number(hits[h].getAttribute("data-line")));
+      }
+      var target = null;
+      if (ref.jump === "lines" && ref.rows && ref.rows.length) {
+        target = ref.rows[0].tr;
+      } else if (ref.jump === "file") {
+        target = ref.wrapper;
+      }
+      refs.push({
+        raw: ref.raw,
+        status: ref.status,
+        jump: ref.jump,
+        hitLines: hitLines,
+        visible: target ? nearTop(diffPane, target) : false
+      });
+    }
+    var back = null;
+    var badges = document.querySelectorAll(".walk-back");
+    var b;
+    for (b = 0; b < badges.length; b += 1) {
+      if (badges[b].getAttribute("data-section-id") === section.id) {
+        back = badges[b];
+        break;
+      }
+    }
+    var backVisible = false;
+    if (back) {
+      back.click();
+      var anchor = section.review ? section.el : document.getElementById("section-intro");
+      backVisible = nearTop(walkPane, anchor);
+    }
+    var texts = [];
+    var warningNodes = section.warningsHost ? section.warningsHost.querySelectorAll(".walk-warning") : [];
+    var w;
+    for (w = 0; w < warningNodes.length; w += 1) {
+      texts.push(warningNodes[w].textContent);
+      report.warnings.push(warningNodes[w].textContent);
+    }
+    report.sections.push({
+      id: section.id,
+      refs: refs,
+      backlink: Boolean(back),
+      backVisible: backVisible,
+      warnings: texts
+    });
+  }
+  var box = document.querySelector(".walk-reviewed");
+  if (box) {
+    box.checked = true;
+    box.dispatchEvent(new Event("change"));
+    var stored = {};
+    try {
+      stored = JSON.parse(localStorage.getItem(DATA.storageKey) || "{}");
+    } catch (err) {
+      stored = {error: String(err)};
+    }
+    var kept = box.closest(".walk-section").classList.contains("is-reviewed");
+    box.checked = false;
+    box.dispatchEvent(new Event("change"));
+    var cleared = {};
+    try {
+      cleared = JSON.parse(localStorage.getItem(DATA.storageKey) || "{}");
+    } catch (err2) {
+      cleared = {error: String(err2)};
+    }
+    report.reviewed = {stored: stored, keptClass: kept, cleared: cleared};
+  }
+  var pre = document.createElement("pre");
+  pre.id = "walk-autotest";
+  pre.textContent = JSON.stringify(report);
+  document.body.appendChild(pre);
+}
+
+function main() {
+  document.title = DATA.title || "Diff walkthrough";
+  var chip = document.getElementById("range-chip");
+  chip.textContent = DATA.range || "";
+  chip.title = DATA.range || "";
+  document.getElementById("clear-reviewed").addEventListener("click", clearReviewed);
+  renderWalk();
+  drawDiff();
+  wrappers = diffReady ? bindFiles(DATA.files || []) : new Array((DATA.files || []).length);
+  var i;
+  lineMaps = [];
+  for (i = 0; i < (DATA.files || []).length; i += 1) {
+    lineMaps.push(wrappers[i] ? indexWrapper(wrappers[i]) : new Map());
+  }
+  for (i = 0; i < sections.length; i += 1) {
+    annotate(sections[i]);
+  }
+  addBadges();
+  updateAttention();
+  walkPane.addEventListener("click", onWalkClick);
+  var params = new URLSearchParams(window.location.search);
+  if (params.get("autotest") === "1") {
+    runAutotest();
+  } else {
+    var initial = initialSectionId();
+    if (initial) {
+      var section = sectionById[initial];
+      activate(section, section.primary, true, true, true);
+    }
+  }
+  document.documentElement.setAttribute("data-walk-ready", "1");
+}
+
+main();
+</script>
+</body>
+</html>
+"""
+
+
+if __name__ == "__main__":
+    main()
