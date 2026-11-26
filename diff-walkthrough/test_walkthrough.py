@@ -50,6 +50,45 @@ def statuses(payload):
 
 
 class ParseTests(unittest.TestCase):
+    def test_review_fingerprints_follow_cited_hunks(self):
+        diff = """diff --git a/demo.py b/demo.py
+index aaa..bbb 100644
+--- a/demo.py
++++ b/demo.py
+@@ -1,2 +1,2 @@
+ context
+-old
++new
+@@ -50 +50 @@
+-before
++after
+"""
+        notes = """## First
+`demo.py:1`
+## Second
+`demo.py:50`
+## Both
+`demo.py:1-50`
+## File
+`demo.py`
+"""
+
+        def fingerprints(patch, layout="line-by-line"):
+            payload = TOOL.build_payload(patch, notes, "main...HEAD", layout)
+            return {section["title"]: section["reviewFingerprint"] for section in payload["sections"]}
+
+        original = fingerprints(diff)
+        self.assertEqual(original, fingerprints(diff, "side-by-side"))
+        for old, new in [("-old", "-older"), ("+new", "+newer"), (" context", " other")]:
+            with self.subTest(change=new):
+                changed = fingerprints(diff.replace(old, new).replace("aaa..bbb", "aaa..ccc"))
+                self.assertEqual(original["Second"], changed["Second"])
+                for title in ["First", "Both", "File"]:
+                    self.assertNotEqual(original[title], changed[title])
+        missing = fingerprints(diff.split("@@ -50")[0])
+        self.assertNotEqual(original["Second"], missing["Second"])
+        self.assertEqual(original["First"], missing["First"])
+
     def test_hunk_lines_context_and_additions(self):
         diff = "\n".join(
             [

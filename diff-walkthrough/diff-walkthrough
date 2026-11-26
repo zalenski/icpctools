@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import re
 import subprocess
@@ -28,7 +29,7 @@ DIFF2HTML_JS = (
 )
 
 _LOCATION_RE = re.compile(r"^(?P<path>.+?):(?P<start>\d+)(?:-(?P<end>\d+))?$")
-_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(?P<start>\d+)(?:,\d+)? @@")
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(?P<start>\d+)(?:,(?P<count>\d+))? @@")
 _FENCE_RE = re.compile(r"^ {0,3}```")
 _H1_RE = re.compile(r"^ {0,3}#\s+(.*)$")
 _H2_RE = re.compile(r"^ {0,3}##\s+(.*)$")
@@ -136,17 +137,21 @@ def parse_unified_diff(diff_text: str) -> list[dict]:
             "binary": False,
             "deleted": False,
             "combined": combined,
+            "patch_hash": hashlib.sha256(),
+            "hunks": [],
         }
         files.append(current)
         new_line = None
 
-    for line in diff_text.splitlines():
+    for patch_line in io.StringIO(diff_text):
+        line = patch_line.rstrip("\n")
         paths = _split_diff_paths(line)
         if paths is not None:
             start_file(paths[0], paths[1], line.startswith("diff --cc ") or line.startswith("diff --combined "))
-            continue
         if current is None:
             continue
+        encoded = patch_line.encode("utf-8")
+        current["patch_hash"].update(encoded)
         if line.startswith("deleted file mode"):
             current["deleted"] = True
             continue
@@ -171,9 +176,13 @@ def parse_unified_diff(diff_text: str) -> list[dict]:
         hunk = _HUNK_RE.match(line)
         if hunk:
             new_line = int(hunk.group("start"))
+            end = new_line + int(hunk.group("count") or 1) - 1
+            heading = line[hunk.end():] + "\n"
+            current["hunks"].append((new_line, end, hashlib.sha256(heading.encode("utf-8"))))
             continue
         if new_line is None or current["combined"]:
             continue
+        current["hunks"][-1][2].update(encoded)
         if line.startswith("\\"):
             continue
         if line.startswith("+"):
@@ -525,10 +534,29 @@ def _storage_key(range_spec: str, sections: list[dict]) -> str:
     return f"diff-walkthrough:{digest}"
 
 
+def _review_fingerprint(section: dict, files: list[dict]) -> str:
+    citations = []
+    for ref in section["refs"]:
+        target = [ref["raw"], ref["status"]]
+        if ref["fileIndex"] is not None:
+            file = files[ref["fileIndex"]]
+            target.extend([file["old"], file["new"]])
+            if ref["jump"] == "lines":
+                for start, end, digest in file["hunks"]:
+                    if start <= end and start <= ref["end"] and ref["start"] <= end:
+                        target.append(digest.hexdigest())
+            elif ref["jump"] == "file" or ref["status"] in ("binary", "deleted", "combined"):
+                target.append(file["patch_hash"].hexdigest())
+        citations.append(target)
+    return hashlib.sha256(json.dumps(citations).encode("utf-8")).hexdigest()
+
+
 def build_payload(diff_text: str, markdown: str, range_spec: str, output_format: str) -> dict:
     files = parse_unified_diff(diff_text)
     document = parse_walkthrough(markdown, known_paths(files))
     resolve_document(files, document)
+    for section in document["sections"]:
+        section["reviewFingerprint"] = _review_fingerprint(section, files)
     return {
         "title": document["title"],
         "range": range_spec,
@@ -1216,14 +1244,14 @@ function renderMarkdown(src, refs, cursor, sectionId) {
 
 function bindReview(section, input, article) {
   var state = loadState();
-  if (state[section.id]) {
+  if (state[section.id] === section.reviewFingerprint) {
     input.checked = true;
     article.classList.add("is-reviewed");
   }
   input.addEventListener("change", function () {
     var current = loadState();
     if (input.checked) {
-      current[section.id] = true;
+      current[section.id] = section.reviewFingerprint;
     } else {
       delete current[section.id];
     }
@@ -1335,7 +1363,7 @@ function renderWalk() {
     };
     sections.push(section);
     sectionById[section.id] = section;
-    bindReview(section, input, article);
+    bindReview(source, input, article);
   }
   updateReviewed();
 }

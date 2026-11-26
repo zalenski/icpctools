@@ -36,6 +36,8 @@ Citations that are not in the diff are printed as `warning:` lines and shown in 
 
 ## Review progress
 
+When you regenerate a walkthrough with the same range and section headings, a section stays checked if its citations still point to the same hunk content. A change to an added, removed, or context line anywhere in a cited hunk reopens that section. A whole-file citation tracks the file's entire patch. The first time you regenerate with this version, sections checked by older viewers start unchecked.
+
 Uncheck a section to review it again, or click **Clear review marks** beside the reviewed count to reset all sections in the current walkthrough.
 
 ## Walkthrough format
